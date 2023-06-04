@@ -1,0 +1,10 @@
+## Interface: 100100
+## Title: WhoNeedsThis
+## Author: LudiusMaximus
+## Notes: Displays in a crafting reagent's tooltip which of your alts could need it for what.
+## RequiredDeps:
+## OptionalDeps: Bagnon
+## Version: 1.0
+
+main.lua
+
