@@ -27,7 +27,7 @@ local GetBagnonCounts = nil
 if Bagnon then
 
   -- Copied these from BagBrother\core\features\tooltipCounts.lua.
-  
+
   local NONE = Bagnon.None
 
   local function aggregate(counts, bag)
@@ -87,18 +87,18 @@ if Bagnon then
     if id and id ~= HEARTHSTONE_ITEM_ID then
 
       for i, owner in Bagnon.Owners:Iterate() do
-      
+
         -- Make sure we are only checking characters from the same realm.
         local gameAccountInfo = C_BattleNet_GetGameAccountInfoByGUID(UnitGUID("player"))
-        
+
         -- We are not looking at guilds.
         if owner.realm == gameAccountInfo.realmName and not owner.isguild then
           -- print("--------------------", owner.name)
-          
+
           if owner.offline and not owner.counts then
             CountItems(owner)
           end
-          
+
           local equip, bags, bank, vault
           if not owner.offline then
             local carrying = GetItemCount(id)
@@ -117,13 +117,13 @@ if Bagnon then
             -- print(owner.name, equip, bags, bank, owner.class)
             returnTable[owner.name] = {["equip"] = equip, ["bags"] = bags, ["bank"] = bank, ["vault"] = vault, ["class"] = owner.class}
           end
-          
+
         end
       end
     end
-    
+
     return returnTable
-    
+
 	end
 end
 
@@ -136,20 +136,20 @@ local function OnItem(self)
   -- TooltipUtil.GetDisplayedItem(self) is the same as self:GetItem()
   local _, link = TooltipUtil.GetDisplayedItem(self)
   if not link then return end
-  
-  
-  
+
+
+
   if Bagnon then
 
     local BagnonL = LibStub('AceLocale-3.0'):GetLocale("Bagnon")
 
     local labelTotal = BagnonL.Total
     -- Cut off ": %d" from the end.
-    local labelEquip = strsub(BagnonL.TipCountEquip, 1, #BagnonL.TipCountEquip - 4)   
+    local labelEquip = strsub(BagnonL.TipCountEquip, 1, #BagnonL.TipCountEquip - 4)
     local labelBags = strsub(BagnonL.TipCountBags, 1, #BagnonL.TipCountBags - 4)
     local labelBank = strsub(BagnonL.TipCountBank, 1, #BagnonL.TipCountBank - 4)
     local labelVault = strsub(BagnonL.TipCountVault, 1, #BagnonL.TipCountVault - 4)
-    
+
 
     local countColour = "|cffffffff"
     local placeColour = "|cffc7c7cf"
@@ -159,7 +159,7 @@ local function OnItem(self)
 
     local bagnonCounts = GetBagnonCounts(link)
 
-    
+
     -- Sort by character name.
     local function SortPlayers(a, b)
       if a == UnitName("player") then
@@ -175,24 +175,24 @@ local function OnItem(self)
     for k in pairs(bagnonCounts) do tinsert(tkeys, k) end
     sort(tkeys, SortPlayers)
 
-    
+    -- print("############################")
     for _, k in ipairs(tkeys) do
       v = bagnonCounts[k]
-      
+
       -- print(k, v["equip"], v["bags"], v["bank"], v["class"], v["vault"])
-    
-      if v["equip"] == nil then v["equip"] = 0 end
-      if v["bags"] == nil then v["bags"] = 0 end
-      if v["bank"] == nil then v["bank"] = 0 end
-      if v["vault"] == nil then v["vault"] = 0 end
-    
+
+      if v["equip"] == nil or v["equip"] < 0 then v["equip"] = 0 end
+      if v["bags"] == nil or v["bags"] < 0 then v["bags"] = 0 end
+      if v["bank"] == nil or v["bank"] < 0 then v["bank"] = 0 end
+      if v["vault"] == nil or v["vault"] < 0 then v["vault"] = 0 end
+
       local sum = v["equip"] + v["bags"] + v["bank"] + v["vault"]
-    
+
       if sum > 0 then
-    
+
         local places = 0
         local text = ""
-        
+
         if v["equip"] > 0 then
           text = text .. placeColour .. labelEquip .. "|r " .. countColour .. v["equip"] .. "|r, "
           places = places + 1
@@ -209,33 +209,35 @@ local function OnItem(self)
           text = text .. placeColour .. labelVault .. "|r " .. countColour .. v["vault"] .. "|r, "
           places = places + 1
         end
-        
+
         -- Remove last delimiter.
         text = strsub(text, 1, #text - 2)
-        
+
         if places > 1 then
           text = placeColour .. "(" .. "|r" .. text .. placeColour .. ") " .. "|r" .. countColour .. sum .. "|r"
         end
-        
+
         if characters == 0 then
           self:AddLine(" ")
         end
         self:AddDoubleLine(CLASS_COLORS[v["class"]] .. k .. "|r", text)
-        
+
         characters = characters + 1
         total = total + sum
+
+        -- print("total", total)
       end
-      
-      
+
+
     end
-        
+
     if characters > 1 then
       self:AddLine(" ")
       self:AddDoubleLine(BagnonL.Total, countColour .. total .. "|r")
     end
-    
+
   end
-  
+
 end
 TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnItem)
 
@@ -263,16 +265,16 @@ TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnItem)
 
 -- local function CurrencyTooltip(objTooltip, currencyName, currencyIcon, currencyID)
 	-- if not currencyID then return end
-	
+
 	-- --loop through our characters
 	-- local usrData = {}
-	
+
 	-- for unitObj in Data:IterateUnits() do
 		-- if not unitObj.isGuild and unitObj.data.currency and unitObj.data.currency[currencyID] then
 			-- table.insert(usrData, { unitObj=unitObj, colorized=self:ColorizeUnit(unitObj), sortIndex=self:GetSortIndex(unitObj), count=unitObj.data.currency[currencyID].count} )
 		-- end
 	-- end
-	
+
 	-- --sort the list by our sortIndex then by realm and finally by name
 	-- table.sort(usrData, function(a, b)
 		-- if a.sortIndex  == b.sortIndex then
@@ -283,7 +285,7 @@ TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnItem)
 		-- end
 		-- return a.sortIndex < b.sortIndex;
 	-- end)
-	
+
 	-- if currencyName then
 		-- objTooltip:AddLine(currencyName, 64/255, 224/255, 208/255)
 		-- objTooltip:AddLine(" ")
@@ -302,10 +304,10 @@ TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnItem)
 -- hooksecurefunc(GameTooltip, "SetCurrencyToken", function(self, index)
 
   -- if self.__tooltipUpdated then return end
-  
+
   -- local name, isHeader, isExpanded, isUnused, isWatched, count, icon = GetCurrencyListInfo(index)
-  
-  
+
+
   -- local link = GetCurrencyListLink(index)
   -- if name and icon and link then
     -- local currencyID = BSYC:GetCurrencyID(link)
@@ -338,7 +340,7 @@ TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnItem)
 -- hooksecurefunc(GameTooltip, "SetMerchantCostItem", function(self, index, currencyIndex)
   -- --see MerchantFrame_UpdateAltCurrency
   -- if self.__tooltipUpdated then return end
-  
+
   -- local currencyID = select(currencyIndex, GetMerchantCurrencies())
   -- if currencyID then
     -- local name, currentAmount, icon, earnedThisWeek, weeklyMax, totalMax, isDiscovered, rarity = GetCurrencyInfo(currencyID)
