@@ -1,4 +1,4 @@
-## Interface: 100100
+## Interface: 100105
 ## Title: WhoNeedsThis
 ## Author: LudiusMaximus
 ## Notes: Displays in a crafting reagent's tooltip which of your alts could need it for what.
