@@ -90,6 +90,7 @@ if Bagnon then
 
         -- Make sure we are only checking characters from the same realm.
         local gameAccountInfo = C_BattleNet_GetGameAccountInfoByGUID(UnitGUID("player"))
+        if not gameAccountInfo then return end
 
         -- We are not looking at guilds.
         if owner.realm == gameAccountInfo.realmName and not owner.isguild then
@@ -129,7 +130,6 @@ end
 
 
 
-
 -- Hooking
 local function OnItem(self)
 
@@ -141,15 +141,11 @@ local function OnItem(self)
 
   if Bagnon then
 
-    local BagnonL = LibStub('AceLocale-3.0'):GetLocale("Bagnon")
-
-    local labelTotal = BagnonL.Total
-    -- Cut off ": %d" from the end.
-    local labelEquip = strsub(BagnonL.TipCountEquip, 1, #BagnonL.TipCountEquip - 4)
-    local labelBags = strsub(BagnonL.TipCountBags, 1, #BagnonL.TipCountBags - 4)
-    local labelBank = strsub(BagnonL.TipCountBank, 1, #BagnonL.TipCountBank - 4)
-    local labelVault = strsub(BagnonL.TipCountVault, 1, #BagnonL.TipCountVault - 4)
-
+    local labelTotal = "Total"
+    local labelEquip = "Equipped"
+    local labelBags = "Bags"
+    local labelBank = "Bank"
+    local labelVault = "Vault"
 
     local countColour = "|cffffffff"
     local placeColour = "|cffc7c7cf"
@@ -158,7 +154,7 @@ local function OnItem(self)
     local total = 0
 
     local bagnonCounts = GetBagnonCounts(link)
-
+    if not bagnonCounts then return end
 
     -- Sort by character name.
     local function SortPlayers(a, b)
@@ -233,7 +229,7 @@ local function OnItem(self)
 
     if characters > 1 then
       self:AddLine(" ")
-      self:AddDoubleLine(BagnonL.Total, countColour .. total .. "|r")
+      self:AddDoubleLine(labelTotal, countColour .. total .. "|r")
     end
 
   end
