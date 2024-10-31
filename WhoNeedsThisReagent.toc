@@ -1,7 +1,7 @@
-## Interface: 110000
-## Title: WhoNeedsThis
+## Interface: 110005
+## Title: WhoNeedsThisReagent
 ## Author: LudiusMaximus
-## Notes: Displays in a crafting reagent's tooltip which of your alts could need it for what.
+## Notes: Displays in a crafting reagent's tooltip which of your alts could need it for what (and possibly skill up).
 ## RequiredDeps:
 ## OptionalDeps: Bagnon
 ## Version: 1.0
