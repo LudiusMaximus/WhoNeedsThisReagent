@@ -72,14 +72,14 @@ local function FetchAllRecipes()
     -- Only fetch all recipes when there is a new build.
     -- https://warcraft.wiki.gg/wiki/API_GetBuildInfo
     local _, buildNumber = GetBuildInfo()
-    
-    
-    
+
+
+
     -- Get info of the currently viewed profession.
     -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.GetBaseProfessionInfo
     local professionInfo = C_TradeSkillUI.GetBaseProfessionInfo()
 
-    print("Profession:", professionInfo.professionName, "Enum.Profession:", professionInfo.profession, "Profession Trade Skill Line ID:", professionInfo.professionID)
+    -- print("Profession:", professionInfo.professionName, "Enum.Profession:", professionInfo.profession, "Profession Trade Skill Line ID:", professionInfo.professionID)
 
     -- Using Trade Skill Line ID because this easier to obtain with GetProfessionInfo() below.
     local professionId = professionInfo.professionID
@@ -90,9 +90,9 @@ local function FetchAllRecipes()
       -- (Easiest way to make sure that we don't have any old data in there.)
       reagentToRecipeData[professionId] = {}
     -- end
-    
-    
-    
+
+
+
     -- For reuse in loop.
     local realmName = GetRealmName()
     local playerName = UnitName("player")
@@ -154,48 +154,58 @@ local function UpdateProfessions()
 
   -- Using this function to also store the player class.
   AddOrUpdatecharacterToClass(realmName, playerName, select(2, UnitClass("player")))
-  
-  
+
+
+
+
+  -- https://warcraft.wiki.gg/wiki/API_GetProfessions
+  local spellTabIndexProf1, spellTabIndexProf2, _, _, spellTabIndexCooking = GetProfessions()
+  -- print("spellTabIndexProf1:", spellTabIndexProf1, "spellTabIndexProf2:", spellTabIndexProf2, "cooking:", spellTabIndexCooking)
+
+  -- Using Trade Skill Line ID because this easier to obtain with GetProfessionInfo().
+  local professionId1, professionId2
+  if spellTabIndexProf1 then
+    local name, icon, _, _, _, _, tradeSkillLineId = GetProfessionInfo(spellTabIndexProf1)
+    -- print("Profession 1 - name:", name, "icon:", icon, "tradeSkillLineId:", tradeSkillLineId)
+    professionSkillLineToIcon[tradeSkillLineId] = icon
+    professionId1 = tradeSkillLineId
+    if not recipeDifficultyData[realmName] or not recipeDifficultyData[realmName][playerName] or not recipeDifficultyData[realmName][playerName][tradeSkillLineId] then
+      print("|cffff2020Your addon \"Who needs this reagent\" has no data on " .. name .. ". Please open the profession pane.|r")
+    end
+  end
+  if spellTabIndexProf2 then
+    local name, icon, _, _, _, _, tradeSkillLineId = GetProfessionInfo(spellTabIndexProf2)
+    -- print("Profession 2 - name:", name, "icon:", icon, "tradeSkillLineId:", tradeSkillLineId)
+    professionSkillLineToIcon[tradeSkillLineId] = icon
+    professionId2 = tradeSkillLineId
+    if not recipeDifficultyData[realmName] or not recipeDifficultyData[realmName][playerName] or not recipeDifficultyData[realmName][playerName][tradeSkillLineId] then
+      print("|cffff2020Your addon \"Who needs this reagent\" has no data on " .. name .. ". Please open the profession pane.|r")
+    end
+  end
+  if spellTabIndexCooking then
+    local name, icon, _, _, _, _, tradeSkillLineId = GetProfessionInfo(spellTabIndexCooking)
+    -- print("Cooking - name:", name, "icon:", icon, "tradeSkillLineId:", tradeSkillLineId)
+    professionSkillLineToIcon[tradeSkillLineId] = icon
+    if not recipeDifficultyData[realmName] or not recipeDifficultyData[realmName][playerName] or not recipeDifficultyData[realmName][playerName][tradeSkillLineId] then
+      print("|cffff2020Your addon \"Who needs this reagent\" has no data on " .. name .. ". Please open the profession pane.|r")
+    end
+  end
+
   -- If we have entries, check if they are still correct.
   if recipeDifficultyData[realmName] and recipeDifficultyData[realmName][playerName] then
-
-    -- https://warcraft.wiki.gg/wiki/API_GetProfessions
-    local spellTabIndexProf1, spellTabIndexProf2, _, _, spellTabIndexCooking = GetProfessions()
-    -- print("spellTabIndexProf1:", spellTabIndexProf1, "spellTabIndexProf2:", spellTabIndexProf2, "cooking:", spellTabIndexCooking)
-
-    -- Using Trade Skill Line ID because this easier to obtain with GetProfessionInfo().
-    local professionId1, professionId2
-    if spellTabIndexProf1 then
-      local name, icon, _, _, _, _, tradeSkillLineId = GetProfessionInfo(spellTabIndexProf1)
-      -- print("Profession 1 - name:", name, "icon:", icon, "tradeSkillLineId:", tradeSkillLineId)
-      professionSkillLineToIcon[tradeSkillLineId] = icon
-      professionId1 = tradeSkillLineId
-    end
-    if spellTabIndexProf2 then
-      local name, icon, _, _, _, _, tradeSkillLineId = GetProfessionInfo(spellTabIndexProf2)
-      -- print("Profession 2 - name:", name, "icon:", icon, "tradeSkillLineId:", tradeSkillLineId)
-      professionSkillLineToIcon[tradeSkillLineId] = icon
-      professionId2 = tradeSkillLineId
-    end
-    if spellTabIndexCooking then
-      local name, icon, _, _, _, _, tradeSkillLineId = GetProfessionInfo(spellTabIndexCooking)
-      -- print("Cooking - name:", name, "icon:", icon, "tradeSkillLineId:", tradeSkillLineId)
-      professionSkillLineToIcon[tradeSkillLineId] = icon
-    end
-    
-    
-        
     -- Update the professions for the character, removing any old professions.
     for professionId in pairs(recipeDifficultyData[realmName][playerName]) do
-      -- print("Checking profession:", professionId, "against", professionId1, professionId2)
-      if professionId ~= professionId1 and professionId ~= professionId2 then
-        -- print("Removing profession:", professionId)
-        recipeDifficultyData[realmName][playerName][professionId] = nil
+      -- Always keep cooking.
+      if professionId ~= 185 then
+        -- print("Checking profession:", professionId, "against", professionId1, professionId2)
+        if professionId ~= professionId1 and professionId ~= professionId2 then
+          -- print("Removing profession:", professionId)
+          recipeDifficultyData[realmName][playerName][professionId] = nil
+        end
       end
     end
-
   end
-  
+
 end
 
 skillLinesChangedFrame:SetScript("OnEvent", function() UpdateProfessions() end)
@@ -220,11 +230,11 @@ local function GetRecipesForReagent(professionId, reagentId)
 
   if reagentToRecipeData[professionId] then
     if reagentToRecipeData[professionId][reagentId] then
-    
+
       for _, recipeId in pairs(reagentToRecipeData[professionId][reagentId]) do
         tinsert(recipes, recipeId)
       end
-      
+
     end
   end
 
@@ -493,53 +503,53 @@ end
 local function ShowSecondTooltip()
 
   if (IsLeftShiftKeyDown() or IsRightShiftKeyDown()) and GameTooltip:IsShown() then
-    
+
 
     local _, link = GameTooltip:GetItem()
     if not link then
       HideSecondTooltip()
       return
     end
-    
+
     local isCraftingReagent = select(17, C_Item.GetItemInfo(link))
     if not isCraftingReagent then
       HideSecondTooltip()
       return
     end
-    
+
     local reagentId = tonumber(string_match(link, "^.-:(%d+):"))
     -- print("reagentId", reagentId)
-    
+
 
 
 
     local charactersToPrint = {}
     local charactersToPrintEmpty = true
 
-    
+
     -- Go through all stored characters.
-    for realm, characters in pairs(recipeDifficultyData) do 
+    for realm, characters in pairs(recipeDifficultyData) do
       for character, recipeDifficultyDataSets in pairs(characters) do
         -- print(realm, character)
- 
+
         -- Go through this character's professions.
         for professionId, recipeToDifficulty in pairs(recipeDifficultyDataSets) do
           -- print("professionId", professionId)
 
           -- Go through all recipes for the current reagent.
           for _, recipeID in pairs(GetRecipesForReagent(professionId, reagentId)) do
-                     
+
             local recipeInfo = C_TradeSkillUI.GetRecipeInfo(recipeID)
 
-            print("Character:", character.."-"..realm, "Profession:", professionId, "Recipe:", recipeInfo.name, "Recipe ID:", recipeID, "difficulty:", recipeToDifficulty[recipeID])
-            
+            -- print("Character:", character.."-"..realm, "Profession:", professionId, "Recipe:", recipeInfo.name, "Recipe ID:", recipeID, "difficulty:", recipeToDifficulty[recipeID])
+
             charactersToPrint[realm] = charactersToPrint[realm] or {}
             charactersToPrint[realm][character] = charactersToPrint[realm][character] or {}
             charactersToPrint[realm][character][professionId] = charactersToPrint[realm][character][professionId] or {}
             tinsert(charactersToPrint[realm][character][professionId], {recipeInfo.name, recipeToDifficulty[recipeID]})
-            
+
             if charactersToPrintEmpty then charactersToPrintEmpty = false end
-            
+
           end
         end
       end
@@ -556,9 +566,9 @@ local function ShowSecondTooltip()
     secondTooltip = CreateFrame("Frame", "CustomTooltipFrame", UIParent, "BackdropTemplate")
     secondTooltip:SetFrameStrata("TOOLTIP")
     secondTooltip:SetBackdrop({
-      bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", 
-      edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", 
-      tile = true, tileSize = 16, edgeSize = 16, 
+      bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+      edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+      tile = true, tileSize = 16, edgeSize = 16,
       insets = { left = 4, right = 4, top = 4, bottom = 4 }
     })
     secondTooltip:SetBackdropBorderColor(TOOLTIP_DEFAULT_COLOR:GetRGBA())
@@ -575,61 +585,61 @@ local function ShowSecondTooltip()
     tooltipHeaderFontString:SetTextScale(1.2)
     tooltipHeaderFontString:SetTextColor(NORMAL_FONT_COLOR:GetRGB())
     tooltipHeaderFontString:SetText("Who needs this reagent?")
-    
-    
+
+
     lastCharacterFrame = tooltipHeaderFontString
-    
-    
+
+
     local tooltipHeight = tooltipHeaderFontString:GetHeight()
-    
+
     -- Go through all characters to print.
     for realm, characters in pairs(charactersToPrint) do
-    
-    
+
+
       for character, professionIds in pairs(characters) do
 
-        
+
         local characterFrame = CreateFrame("Frame", nil, secondTooltip)
-        
-        
-        
+
+
+
         local characterNameFontString = characterFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
         characterNameFontString:SetTextColor(LIGHTGRAY_FONT_COLOR:GetRGB())
         characterNameFontString:SetPoint("TOPLEFT", characterFrame, "TOPLEFT")
         -- https://warcraft.wiki.gg/wiki/API_C_ClassColor.GetClassColor
         characterNameFontString:SetText(C_ClassColor.GetClassColor(characterToClass[realm][character]):WrapTextInColorCode(character) .. " (" .. realm .. ")")
-         
+
         -- To calculate height of frames.
         local stringHeight = tooltipHeaderFontString:GetHeight()
         local frameHeight = stringHeight
-        
+
         local lastString = characterNameFontString
-        
+
         for professionId, recipes in pairs(professionIds) do
-        
+
           local professionNameFontString = characterFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
           professionNameFontString:SetTextColor(WHITE_FONT_COLOR:GetRGB())
           professionNameFontString:SetText("|T" .. professionSkillLineToIcon[professionId] .. ":16:16:0:0|t " .. C_TradeSkillUI.GetProfessionInfoBySkillLineID(professionId).professionName)
           professionNameFontString:SetPoint("TOPLEFT", lastString, "BOTTOMLEFT", 0, 0)
           frameHeight = frameHeight + stringHeight
           lastString = professionNameFontString
-          
-          
+
+
           for _, recipe in pairs(recipes) do
             -- print(recipe[1], recipe[2])
-          
+
             -- https://warcraft.wiki.gg/wiki/ColorMixin
             local textColor = IMPOSSIBLE_DIFFICULTY_COLOR
             if recipe[2] == 0 then
               textColor = DIFFICULT_DIFFICULTY_COLOR
-            elseif recipe[2] == 1 then 
+            elseif recipe[2] == 1 then
               textColor = FAIR_DIFFICULTY_COLOR
             elseif recipe[2] == 2 then
               textColor = EASY_DIFFICULTY_COLOR
             elseif recipe[2] == 3 then
               textColor = TRIVIAL_DIFFICULTY_COLOR
             end
-            
+
             local recipeNameFontString = characterFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
             recipeNameFontString:SetTextColor(WHITE_FONT_COLOR:GetRGB())
             recipeNameFontString:SetTextColor(textColor.r, textColor.g, textColor.b)
@@ -637,29 +647,29 @@ local function ShowSecondTooltip()
             recipeNameFontString:SetPoint("TOPLEFT", lastString, "BOTTOMLEFT", 0, 0)
             frameHeight = frameHeight + stringHeight
             lastString = recipeNameFontString
-          
+
           end
-          
-    
+
+
         end
-        
-        
+
+
         characterFrame:SetPoint("TOPLEFT", lastCharacterFrame, "BOTTOMLEFT", 0, 0)
         characterFrame:SetSize(300, frameHeight)
 
         tooltipHeight = tooltipHeight + characterFrame:GetHeight()
-        
+
         lastCharacterFrame = characterFrame
 
       end
-      
+
     end
-    
-    
-    
+
+
+
 
     -- UIParent:GetWidth() * UIParent:GetEffectiveScale()
-    
+
     secondTooltip:SetSize(300, tooltipHeight)
 
 
