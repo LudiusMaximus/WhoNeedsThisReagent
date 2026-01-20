@@ -1,10 +1,9 @@
-## Interface: 110005
+## Interface: 120000
+## Version: @project-version@
 ## Title: WhoNeedsThisReagent
 ## Author: LudiusMaximus
 ## Notes: Displays in a crafting reagent's tooltip which of your alts could need it for what (and possibly skill up).
-## RequiredDeps:
 ## OptionalDeps: Bagnon
-## Version: 1.0
 ## SavedVariables: recipeDifficultyData, reagentToRecipeData, characterToClass, professionSkillLineToIcon
 
 main.lua
