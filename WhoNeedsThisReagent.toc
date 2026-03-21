@@ -1,9 +1,15 @@
-## Interface: 120000
+## Interface: 120001
 ## Version: @project-version@
 ## Title: WhoNeedsThisReagent
+## IconAtlas: Reagents
 ## Author: LudiusMaximus
 ## Notes: Displays in a crafting reagent's tooltip which of your alts could need it for what (and possibly skill up).
 ## OptionalDeps: Bagnon
-## SavedVariables: recipeDifficultyData, reagentToRecipeData, characterToClass, professionSkillLineToIcon
+## SavedVariables: WNTR_recipeToDifficulty, WNTR_reagentToRecipe, WNTR_recipeToRank, WNTR_characterToClass, WNTR_professionSkillLineToIcon, WNTR_professionVariantToSkillLevel, WNTR_pendingGlobalSync, WNTR_pendingCharacterSync, WNTR_whoNeedsThisReagentIconDB
 
+embeds.xml
 main.lua
+Helpers.lua
+MinimapButton.lua
+Sync.lua
+Tooltip.lua
