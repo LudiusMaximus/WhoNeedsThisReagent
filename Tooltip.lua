@@ -210,7 +210,13 @@ local function ShowSecondTooltip()
             local recipeName = recipeInfo.name
             local rank = WNTR_recipeToRank[recipeID]
             if rank then
-              recipeName = recipeName .. " (Rank " .. rank .. ")"
+              local currentXP = WNTR_recipeToExperience[realm] and WNTR_recipeToExperience[realm][character] and WNTR_recipeToExperience[realm][character][recipeID]
+              local nextXP = WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeID]
+              if currentXP and nextXP then
+                recipeName = recipeName .. " (Rank " .. rank .. ", " .. currentXP .. "/" .. nextXP .. ")"
+              else
+                recipeName = recipeName .. " (Rank " .. rank .. ")"
+              end
             end
             -- recipeName = recipeName .. " [" .. recipeID .. "]"  -- DEBUG: recipeID display
             tinsert(recipeLines, { text = recipeName, r = textColor.r, g = textColor.g, b = textColor.b, kind = "recipe" })

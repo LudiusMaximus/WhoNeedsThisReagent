@@ -1,4 +1,4 @@
-local _, addon = ...
+local folderName, addon = ...
 
 -- Cache of global WoW API tables/functions.
 local C_Timer_NewTicker                             = _G.C_Timer.NewTicker
@@ -21,14 +21,16 @@ local table_remove                                  = _G.table.remove
 local tinsert                                       = _G.tinsert
 
 -- Cache addon tables/functions.
-local AddOrUpdateCharacterRecipeDifficulty = addon.AddOrUpdateCharacterRecipeDifficulty
-local AddOrUpdateCharacterToClass          = addon.AddOrUpdateCharacterToClass
-local AddReagentsForRecipe                 = addon.AddReagentsForRecipe
-local AssignRanksByName                    = addon.AssignRanksByName
-local CharacterHasProfession               = addon.CharacterHasProfession
-local GetRecipeRank                        = addon.GetRecipeRank
-local pendingFetchProfessions              = addon.pendingFetchProfessions
-local StopLastSound                        = addon.StopLastSound
+local AddOrUpdateCharacterRecipeDifficulty        = addon.AddOrUpdateCharacterRecipeDifficulty
+local AddOrUpdateCharacterToClass                 = addon.AddOrUpdateCharacterToClass
+local AddReagentsForRecipe                        = addon.AddReagentsForRecipe
+local AssignRanksByName                           = addon.AssignRanksByName
+local CharacterHasProfession                      = addon.CharacterHasProfession
+local CorrectShadowlandsRankedRecipeDifficulty    = addon.CorrectShadowlandsRankedRecipeDifficulty
+local GetRecipeRank                               = addon.GetRecipeRank
+local UpdateRecipeExperience                      = addon.UpdateRecipeExperience
+local pendingFetchProfessions                     = addon.pendingFetchProfessions
+local StopLastSound                               = addon.StopLastSound
 
 
 -- State for the silent-open flow: when we need to sync a profession that isn't currently
@@ -113,6 +115,7 @@ local function DoFetchAllRecipes(baseProfessionId, variantId)
     WNTR_recipeToDifficulty[realmName][playerName][variantId] = nil
 
     local variantRecipeNames = needsGlobalSync and {} or nil
+    local learnedRecipeInfos = {}  -- { [recipeID] = recipeInfo } for post-pass after ranks are assigned
 
     for _, recipeID in pairs(recipeIDs) do
       -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.IsRecipeInSkillLine
@@ -136,6 +139,7 @@ local function DoFetchAllRecipes(baseProfessionId, variantId)
             print("|cffff0000WhoNeedsThisReagent:|r Aborting fetch for variant", variantId, "due to mismatch.")
             return false
           end
+          learnedRecipeInfos[recipeID] = recipeInfo
         end
       end
     end
@@ -144,6 +148,13 @@ local function DoFetchAllRecipes(baseProfessionId, variantId)
     if needsGlobalSync then
       AssignRanksByName(variantRecipeNames)
       WNTR_pendingGlobalSync[variantId] = nil
+    end
+
+    -- Post-pass: correct Shadowlands ranked recipe learned/difficulty, then store XP.
+    -- Both must happen after AssignRanksByName so WNTR_recipeToRank is fully populated.
+    for recipeID, recipeInfo in pairs(learnedRecipeInfos) do
+      CorrectShadowlandsRankedRecipeDifficulty(realmName, playerName, recipeID, recipeInfo, variantId)
+      UpdateRecipeExperience(realmName, playerName, recipeID, recipeInfo)
     end
 
     -- Update skill level for this variant only.
@@ -193,6 +204,7 @@ local function DoFetchAllRecipes(baseProfessionId, variantId)
     end
 
     local variantRecipeNames = needsGlobalSync and {} or nil  -- [variantId] = { [recipeID] = name, ... }
+    local learnedRecipeInfos = {}  -- { [recipeID] = { info, variantId } } for post-pass after ranks are assigned
 
     for _, recipeID in pairs(recipeIDs) do
       local recipeProfInfo = C_TradeSkillUI_GetProfessionInfoByRecipeID(recipeID)
@@ -223,6 +235,7 @@ local function DoFetchAllRecipes(baseProfessionId, variantId)
           print("|cffff0000WhoNeedsThisReagent:|r Aborting fetch for profession", baseProfessionId, "due to mismatch.")
           return false
         end
+        learnedRecipeInfos[recipeID] = { info = recipeInfo, variantId = variantId }
       end
 
     end
@@ -235,6 +248,13 @@ local function DoFetchAllRecipes(baseProfessionId, variantId)
       for _, childInfo in ipairs(childInfos) do
         WNTR_pendingGlobalSync[childInfo.professionID] = nil
       end
+    end
+
+    -- Post-pass: correct Shadowlands ranked recipe learned/difficulty, then store XP.
+    -- Both must happen after AssignRanksByName so WNTR_recipeToRank is fully populated.
+    for recipeID, entry in pairs(learnedRecipeInfos) do
+      CorrectShadowlandsRankedRecipeDifficulty(realmName, playerName, recipeID, entry.info, entry.variantId)
+      UpdateRecipeExperience(realmName, playerName, recipeID, entry.info)
     end
 
     -- Store variant skill levels for change detection in SKILL_LINES_CHANGED.
@@ -357,7 +377,25 @@ end
 
 local function OnEvent(self, event, ...)
 
-  if event == "NEW_RECIPE_LEARNED" then
+  if event == "ADDON_LOADED" then
+
+    local addonName = ...
+    if addonName ~= folderName then return end
+
+    -- Saved variables are now populated. Check for a game client build change and if so,
+    -- mark all known profession variants for global resync.
+    local _, currentBuildNumber = GetBuildInfo()
+    if WNTR_reagentToRecipe["buildNumber"] ~= currentBuildNumber then
+      for variantId in pairs(WNTR_reagentToRecipe) do
+        if variantId ~= "buildNumber" then
+          WNTR_pendingGlobalSync[variantId] = true
+        end
+      end
+      WNTR_reagentToRecipe["buildNumber"] = currentBuildNumber
+    end
+
+
+  elseif event == "NEW_RECIPE_LEARNED" then
 
     local recipeID = ...
     local recipeProfessionInfo = C_TradeSkillUI_GetProfessionInfoByRecipeID(recipeID)
@@ -479,6 +517,7 @@ local function OnEvent(self, event, ...)
 end
 
 eventFrame:SetScript("OnEvent", OnEvent)
+eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("NEW_RECIPE_LEARNED")
 eventFrame:RegisterEvent("TRADE_SKILL_SHOW")
 eventFrame:RegisterEvent("TRADE_SKILL_LIST_UPDATE")
@@ -636,16 +675,17 @@ UpdateProfessions = function()
   WNTR_pendingCharacterSync[realmName][playerName] = WNTR_pendingCharacterSync[realmName][playerName] or {}
 
   -- Pre-compute which base professions have any pending sync (global or character).
+  -- Both pending tables are keyed by variant IDs, which always have a parentProfessionID.
   local baseProfessionsNeedingSync = {}
   for variantId in pairs(WNTR_pendingGlobalSync) do
     local variantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
-    if variantInfo then
+    if variantInfo and variantInfo.parentProfessionID then
       baseProfessionsNeedingSync[variantInfo.parentProfessionID] = true
     end
   end
   for variantId in pairs(WNTR_pendingCharacterSync[realmName][playerName]) do
     local variantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
-    if variantInfo then
+    if variantInfo and variantInfo.parentProfessionID then
       baseProfessionsNeedingSync[variantInfo.parentProfessionID] = true
     end
   end
