@@ -150,4 +150,57 @@ function addon.AssignRanksByName(recipeNames)
 end
 
 
+-- Correct learned/difficulty data for Shadowlands-style ranked recipes, which have two API "bugs":
+--   1. recipeInfo.learned returns true for ALL ranks once rank 1 has any XP.
+--   2. recipeInfo.relativeDifficulty is always 0 (optimal) regardless of rank progress.
+-- Detection: a Shadowlands ranked recipe has a rank but no chain fields (previousRecipeID/nextRecipeID).
+-- Fix: after AssignRanksByName has populated WNTR_recipeToRank, compare the recipe's rank to
+-- unlockedRecipeLevel to determine the true learned/difficulty state.
+function addon.CorrectShadowlandsRankedRecipeDifficulty(realm, character, recipeID, recipeInfo, variantId)
+  if not recipeInfo then return end
+  -- Only apply to Shadowlands-style ranked recipes (no chain fields).
+  if recipeInfo.previousRecipeID or recipeInfo.nextRecipeID then return end
+  local rank = WNTR_recipeToRank[recipeID]
+  if not rank then return end
+  local unlockedLevel = recipeInfo.unlockedRecipeLevel
+  if not unlockedLevel or unlockedLevel == 0 then return end
 
+  local charRecipes = WNTR_recipeToDifficulty[realm]
+      and WNTR_recipeToDifficulty[realm][character]
+      and WNTR_recipeToDifficulty[realm][character][variantId]
+  if not charRecipes then return end
+
+  if rank > unlockedLevel then
+    -- API incorrectly reports as learned; remove it.
+    charRecipes[recipeID] = nil
+  elseif rank < unlockedLevel then
+    -- Already fully mastered; mark as trivial and clear any stale XP data.
+    charRecipes[recipeID] = 3
+    if WNTR_recipeToExperience[realm] and WNTR_recipeToExperience[realm][character] then
+      WNTR_recipeToExperience[realm][character][recipeID] = nil
+    end
+  end
+  -- rank == unlockedLevel: currently being worked on; keep the stored difficulty as-is.
+end
+
+
+-- Store recipe rank XP progress for a learned ranked recipe.
+-- Only stores data for the rank currently being worked on (where rank == unlockedRecipeLevel).
+function addon.UpdateRecipeExperience(realm, character, recipeID, recipeInfo)
+  if not recipeInfo or not WNTR_recipeToRank[recipeID] then return end
+  local rank = WNTR_recipeToRank[recipeID]
+  local unlockedLevel = recipeInfo.unlockedRecipeLevel
+  if not unlockedLevel or unlockedLevel == 0 then return end
+
+  if rank == unlockedLevel then
+    local currentXP = recipeInfo.currentRecipeExperience
+    local nextXP = recipeInfo.nextLevelRecipeExperience
+    if currentXP and nextXP and nextXP > 0 then
+      WNTR_recipeToExperience[realm] = WNTR_recipeToExperience[realm] or {}
+      WNTR_recipeToExperience[realm][character] = WNTR_recipeToExperience[realm][character] or {}
+      WNTR_recipeToExperience[realm][character][recipeID] = currentXP
+      WNTR_recipeToExperience["nextLevels"] = WNTR_recipeToExperience["nextLevels"] or {}
+      WNTR_recipeToExperience["nextLevels"][recipeID] = nextXP
+    end
+  end
+end

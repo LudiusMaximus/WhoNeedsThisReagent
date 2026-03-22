@@ -3,12 +3,13 @@ local folderName, addon = ...
 
 -- ### Saved variables.
 
--- WNTR_recipeToDifficulty[realm][character][variantId][recipeId] = relativeDifficulty (0-3).
-WNTR_recipeToDifficulty = WNTR_recipeToDifficulty or {}
-
 -- WNTR_reagentToRecipe[variantId][reagentItemID] = { recipeID, ... }.
 -- Also stores WNTR_reagentToRecipe["buildNumber"] to detect game client updates.
 WNTR_reagentToRecipe = WNTR_reagentToRecipe or {}
+
+
+-- WNTR_recipeToDifficulty[realm][character][variantId][recipeId] = relativeDifficulty (0-3).
+WNTR_recipeToDifficulty = WNTR_recipeToDifficulty or {}
 
 -- WNTR_recipeToRank[recipeID] = rank (1-based). Populated by walking the previousRecipeID/nextRecipeID
 -- chain for Legion/BfA recipes (which have those fields populated). For Shadowlands recipes (which
@@ -18,8 +19,15 @@ WNTR_reagentToRecipe = WNTR_reagentToRecipe or {}
 -- monotonically ordered by rank. The chain-based path is therefore essential for those expansions.
 WNTR_recipeToRank = WNTR_recipeToRank or {}
 
+-- Recipe rank XP progress per [realm][character][recipeID] = currentXP (number).
+-- Only stored for the rank currently being worked on (i.e. the highest learned rank).
+-- WNTR_recipeToExperience["nextLevels"][recipeID] = nextLevelXP (shared across characters).
+WNTR_recipeToExperience = WNTR_recipeToExperience or {}
+
+
 -- Skill level per [realm][character][variantId] (plain number), with ["maxLevels"][variantId] shared.
 WNTR_professionVariantToSkillLevel = WNTR_professionVariantToSkillLevel or {}
+
 
 -- We store character classes to be able to display character names in class colours.
 WNTR_characterToClass = WNTR_characterToClass or {}
@@ -29,28 +37,19 @@ WNTR_characterToClass = WNTR_characterToClass or {}
 -- So if we want to display icons for arbitrary professions, we need to map professions to icons.
 WNTR_professionSkillLineToIcon = WNTR_professionSkillLineToIcon or {}
 
+
+-- LibDBIcon minimap button position/state.
+WNTR_whoNeedsThisReagentIconDB = WNTR_whoNeedsThisReagentIconDB or {}
+
+
 -- Persistent pending-sync tracking (survives reloads).
 -- WNTR_pendingGlobalSync[variantId] = true: variant's reagent/rank data needs rebuilding (any character can fulfill).
 -- WNTR_pendingCharacterSync[realm][character][variantId] = true: character's difficulty data needs refreshing.
 WNTR_pendingGlobalSync = WNTR_pendingGlobalSync or {}
 WNTR_pendingCharacterSync = WNTR_pendingCharacterSync or {}
 
--- LibDBIcon minimap button position/state.
-WNTR_whoNeedsThisReagentIconDB = WNTR_whoNeedsThisReagentIconDB or {}
-
-
--- On build change, mark all known profession variants for global resync.
-do
-  local _, currentBuildNumber = GetBuildInfo()
-  if WNTR_reagentToRecipe["buildNumber"] ~= currentBuildNumber then
-    for variantId in pairs(WNTR_reagentToRecipe) do
-      if variantId ~= "buildNumber" then
-        WNTR_pendingGlobalSync[variantId] = true
-      end
-    end
-    WNTR_reagentToRecipe["buildNumber"] = currentBuildNumber
-  end
-end
+-- Build change detection is performed in Sync.lua's ADDON_LOADED handler,
+-- after saved variables have been populated by the game engine.
 
 
 -- ============================================================
