@@ -7,8 +7,7 @@ local C_TradeSkillUI_GetProfessionInfoBySkillLineID = _G.C_TradeSkillUI.GetProfe
 local C_TradeSkillUI_GetRecipeInfo                  = _G.C_TradeSkillUI.GetRecipeInfo
 local GameTooltip                                   = _G.GameTooltip
 local GameTooltipText                               = _G.GameTooltipText
-local IsLeftShiftKeyDown                            = _G.IsLeftShiftKeyDown
-local IsRightShiftKeyDown                           = _G.IsRightShiftKeyDown
+local IsModifiedClick                               = _G.IsModifiedClick
 local UIParent                                      = _G.UIParent
 
 local ceil                                          = _G.ceil
@@ -142,11 +141,10 @@ end
 local function ShowSecondTooltip()
 
   -- Be fast in the standard case.
-  if (not IsLeftShiftKeyDown() and not IsRightShiftKeyDown()) or not GameTooltip:IsShown() then
-    -- Inlining HideSecondTooltip() for efficiency.
+  if not IsModifiedClick("COMPAREITEMS") or not GameTooltip:IsShown() then
+    -- Inlining HideSecondTooltip() condition for efficiency.
     if tooltipFrame and tooltipFrame:IsShown() then
-      ReleaseAllFontStrings()
-      tooltipFrame:Hide()
+      HideSecondTooltip()
     end
     return
   end
@@ -432,7 +430,18 @@ end
 
 
 
-
+-- Poll for modifier state changes using OnUpdate (only while GameTooltip is shown).
+-- MODIFIER_STATE_CHANGED is not fired when an edit box has keyboard focus (e.g. chat input),
+-- but IsModifiedClick() checks raw input state and works regardless -- same as Blizzard's
+-- item comparison tooltip (TooltipUtil.ShouldDoItemComparison uses IsModifiedClick("COMPAREITEMS")).
+local tooltipModifierListener = CreateFrame("Frame")
+GameTooltip:HookScript("OnShow", function()
+  tooltipModifierListener:SetScript("OnUpdate", ShowSecondTooltip)
+end)
+GameTooltip:HookScript("OnHide", function()
+  tooltipModifierListener:SetScript("OnUpdate", nil)
+  HideSecondTooltip()
+end)
 
 
 
@@ -677,13 +686,3 @@ end
 -- TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnItem)
 
 
-
-local function ModifierChanged(self, event, key)
-  if key ~= "LSHIFT" and key ~= "RSHIFT" then return end
-	ShowSecondTooltip()
-end
-local f = CreateFrame("Frame")
-f:RegisterEvent("MODIFIER_STATE_CHANGED")
-f:SetScript("OnEvent", ModifierChanged)
-GameTooltip:HookScript("OnShow", ShowSecondTooltip)
-GameTooltip:HookScript("OnHide", HideSecondTooltip)
