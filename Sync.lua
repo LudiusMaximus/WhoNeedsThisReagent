@@ -61,15 +61,22 @@ hooksecurefunc(ItemRefTooltip, "SetHyperlink", function(self, link)
   end
 end)
 
+local printPendingFetchLinkTimer = nil
 local function PrintPendingFetchLink()
-  if #pendingFetchProfessions == 0 then return end
-  local lines = "|cff00ccffWhoNeedsThisReagent:|r The following professions need synchronization:"
-  for _, profId in ipairs(pendingFetchProfessions) do
-    local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(profId)
-    lines = lines .. "\n  - " .. (info and info.professionName or tostring(profId))
+  if printPendingFetchLinkTimer then
+    printPendingFetchLinkTimer:Cancel()
   end
-  lines = lines .. "\nOpen the profession frame, click the minimap button, or |cffff9900|Hitem:wntr:fetch|h[click here]|h|r and press Enter."
-  print(lines)
+  printPendingFetchLinkTimer = C_Timer_NewTimer(0.5, function()
+    printPendingFetchLinkTimer = nil
+    if #pendingFetchProfessions == 0 then return end
+    local lines = "|cff00ccffWhoNeedsThisReagent:|r The following professions need synchronization:"
+    for _, profId in ipairs(pendingFetchProfessions) do
+      local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(profId)
+      lines = lines .. "\n  - " .. (info and info.professionName or tostring(profId))
+    end
+    lines = lines .. "\nOpen the profession frame, click the minimap button, or |cffff9900|Hitem:wntr:fetch|h[click here]|h|r and press Enter."
+    print(lines)
+  end)
 end
 
 local function AddPendingProfession(professionId)
