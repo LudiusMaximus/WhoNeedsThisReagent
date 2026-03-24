@@ -25,7 +25,8 @@ WNTR_recipeToRank = WNTR_recipeToRank or {}
 WNTR_recipeToExperience = WNTR_recipeToExperience or {}
 
 
--- Skill level per [realm][character][variantId] (plain number), with ["maxLevels"][variantId] shared.
+-- Skill level per [realm][character][variantId] (plain number), and max level per [realm][character]["maxLevels"][variantId].
+-- We need to store max levels character-specifically because of profession specializations (e.g. Kul Tiran Herbalism vs. regular Herbalism).
 WNTR_professionVariantToSkillLevel = WNTR_professionVariantToSkillLevel or {}
 
 
