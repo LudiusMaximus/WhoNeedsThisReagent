@@ -179,6 +179,7 @@ local function ShowSecondTooltip()
       -- TODO: print realm in a different color.
       tinsert(characterLines, { text = charText .. " (" .. realm .. ")", kind = "character" })
 
+      local professionBlocks = {}
       for variantId, difficultyByRecipe in pairs(difficultiesByVariant) do
         local recipes = GetRecipesForReagent(variantId, reagentId)
         if #recipes > 0 then
@@ -192,7 +193,6 @@ local function ShowSecondTooltip()
             profName = profName .. " (" .. skillLevel .. "/" .. maxLevel .. ")"
           end
           local profText = "|T" .. WNTR_professionSkillLineToIcon[baseIdForIcon] .. ":14:14:0:0|t " .. profName
-          tinsert(characterLines, { text = profText, kind = "profession" })
 
           local recipeLines = {}
           for _, recipeID in pairs(recipes) do
@@ -220,12 +220,29 @@ local function ShowSecondTooltip()
               end
             end
             -- recipeName = recipeName .. " [" .. recipeID .. "]"  -- DEBUG: recipeID display
+
+            -- When a profession is maxed out, the API may still report learned recipes with
+            -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).
+            -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet.
+            if recipeInfo.learned and skillLevel and maxLevel and maxLevel > 0 and skillLevel >= maxLevel then
+              local rankNotMaxed = rank and WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeID]
+              if not rankNotMaxed then
+                textColor = TRIVIAL_DIFFICULTY_COLOR
+              end
+            end
+
             tinsert(recipeLines, { text = recipeName, r = textColor.r, g = textColor.g, b = textColor.b, kind = "recipe" })
           end
           sort(recipeLines, function(a, b) return a.text < b.text end)
-          for _, recipeLine in ipairs(recipeLines) do
-            tinsert(characterLines, recipeLine)
-          end
+
+          tinsert(professionBlocks, { sortKey = profName, profLine = { text = profText, kind = "profession" }, recipeLines = recipeLines })
+        end
+      end
+      sort(professionBlocks, function(a, b) return a.sortKey < b.sortKey end)
+      for _, block in ipairs(professionBlocks) do
+        tinsert(characterLines, block.profLine)
+        for _, recipeLine in ipairs(block.recipeLines) do
+          tinsert(characterLines, recipeLine)
         end
       end
 
@@ -254,7 +271,8 @@ local function ShowSecondTooltip()
 
   local numLines = #collectedLines
   local numColumns = 1
-  local maxScreenFraction = 0.9
+  local maxScreenFraction = 0.7
+  local fallbackScreenFraction = 0.9
 
   while numLines / numColumns * tooltipLineHeight > maxScreenFraction * UIParent:GetHeight() do
     numColumns = numColumns + 1
@@ -298,8 +316,21 @@ local function ShowSecondTooltip()
       local blockIdx = lineToBlock[splitIdx]
       if blockIdx then
         local block = charBlocks[blockIdx]
-        if splitIdx > block.startIdx and block.startIdx > 1 then
-          splits[s] = block.startIdx - 1
+        local blockSize = block.endIdx - block.startIdx + 1
+        if blockSize > 6 then
+          -- Large block: allow splitting within, but avoid tiny orphan groups.
+          local beforeCount = splitIdx - block.startIdx + 1
+          local afterCount = block.endIdx - splitIdx
+          if beforeCount < 3 and block.startIdx > 1 then
+            splits[s] = block.startIdx - 1
+          elseif afterCount > 0 and afterCount < 3 then
+            splits[s] = block.endIdx
+          end
+        else
+          -- Small block: keep together by moving split before this block.
+          if splitIdx > block.startIdx and block.startIdx > 1 then
+            splits[s] = block.startIdx - 1
+          end
         end
       end
     end
@@ -323,7 +354,7 @@ local function ShowSecondTooltip()
       local count = r.endIdx - r.startIdx + 1
       if count > maxLinesInCol then maxLinesInCol = count end
     end
-    if maxLinesInCol * tooltipLineHeight > maxScreenFraction * UIParent:GetHeight() then
+    if maxLinesInCol * tooltipLineHeight > fallbackScreenFraction * UIParent:GetHeight() then
       columnRanges = {}
       for col = 1, numColumns do
         local s = (col - 1) * linesPerColumn + 1

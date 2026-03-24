@@ -791,10 +791,13 @@ UpdateProfessions = function()
   end
   if WNTR_professionVariantToSkillLevel[realmName] and WNTR_professionVariantToSkillLevel[realmName][playerName] then
     for variantId in pairs(WNTR_professionVariantToSkillLevel[realmName][playerName]) do
-      local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
-      local baseId = info and info.parentProfessionID
-      if baseId and not currentBaseIds[baseId] then
-        WNTR_professionVariantToSkillLevel[realmName][playerName][variantId] = nil
+      -- Skipping the "maxLevels" entry.
+      if type(variantId) == "number" then
+        local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
+        local baseId = info and info.parentProfessionID
+        if baseId and not currentBaseIds[baseId] then
+          WNTR_professionVariantToSkillLevel[realmName][playerName][variantId] = nil
+        end
       end
     end
   end
