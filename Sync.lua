@@ -170,8 +170,8 @@ local function DoFetchAllRecipes(baseProfessionId, variantId)
       WNTR_professionVariantToSkillLevel[realmName] = WNTR_professionVariantToSkillLevel[realmName] or {}
       WNTR_professionVariantToSkillLevel[realmName][playerName] = WNTR_professionVariantToSkillLevel[realmName][playerName] or {}
       WNTR_professionVariantToSkillLevel[realmName][playerName][variantId] = variantInfo.skillLevel
-      WNTR_professionVariantToSkillLevel["maxLevels"] = WNTR_professionVariantToSkillLevel["maxLevels"] or {}
-      WNTR_professionVariantToSkillLevel["maxLevels"][variantId] = variantInfo.maxSkillLevel
+      WNTR_professionVariantToSkillLevel[realmName][playerName]["maxLevels"] = WNTR_professionVariantToSkillLevel[realmName][playerName]["maxLevels"] or {}
+      WNTR_professionVariantToSkillLevel[realmName][playerName]["maxLevels"][variantId] = variantInfo.maxSkillLevel
     end
 
     -- Clear character-specific pending (after difficulty and skill level are both updated).
@@ -274,10 +274,10 @@ local function DoFetchAllRecipes(baseProfessionId, variantId)
     -- Store variant skill levels for change detection in SKILL_LINES_CHANGED.
     WNTR_professionVariantToSkillLevel[realmName] = WNTR_professionVariantToSkillLevel[realmName] or {}
     WNTR_professionVariantToSkillLevel[realmName][playerName] = WNTR_professionVariantToSkillLevel[realmName][playerName] or {}
-    WNTR_professionVariantToSkillLevel["maxLevels"] = WNTR_professionVariantToSkillLevel["maxLevels"] or {}
+    WNTR_professionVariantToSkillLevel[realmName][playerName]["maxLevels"] = WNTR_professionVariantToSkillLevel[realmName][playerName]["maxLevels"] or {}
     for _, childInfo in ipairs(childInfos) do
       WNTR_professionVariantToSkillLevel[realmName][playerName][childInfo.professionID] = childInfo.skillLevel
-      WNTR_professionVariantToSkillLevel["maxLevels"][childInfo.professionID] = childInfo.maxSkillLevel
+      WNTR_professionVariantToSkillLevel[realmName][playerName]["maxLevels"][childInfo.professionID] = childInfo.maxSkillLevel
     end
 
     -- Clear character-specific pending (after difficulty and skill levels are both updated).
@@ -733,29 +733,34 @@ UpdateProfessions = function()
 
       for variantId, prevLevel in pairs(WNTR_professionVariantToSkillLevel[realmName][playerName]) do
 
-        local variantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
+        -- Skipping the "maxLevels" entry, which is not a real variant and does not have a parentProfessionID.
+        if type(variantId) == "number" then
 
-        -- Is this a variant of the currently examined base profession?
-        if variantInfo and variantInfo.parentProfessionID == baseSkillLineId then
+          local variantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
 
-          -- We found at least one variant with stored data, so we only need to sync if the skill level changed.
-          hasAnyVariantData = true
+          -- Is this a variant of the currently examined base profession?
+          if variantInfo and variantInfo.parentProfessionID == baseSkillLineId then
 
-          -- Has the skill level changed since the last sync?
-          -- GetProfessionInfoBySkillLineID works without an open trade skill session,
-          -- but skillLevel may return 0 when the profession backend is not active yet.
-          if variantInfo.skillLevel > 0 and variantInfo.skillLevel ~= prevLevel then
+            -- We found at least one variant with stored data, so we only need to sync if the skill level changed.
+            hasAnyVariantData = true
 
-            -- Mark as character-pending (persisted).
-            WNTR_pendingCharacterSync[realmName][playerName][variantId] = true
+            -- Has the skill level changed since the last sync?
+            -- GetProfessionInfoBySkillLineID works without an open trade skill session,
+            -- but skillLevel may return 0 when the profession backend is not active yet.
+            if variantInfo.skillLevel > 0 and variantInfo.skillLevel ~= prevLevel then
 
-            -- Mark the base profession as needing sync.
-            baseProfessionsNeedingSync[baseSkillLineId] = true
+              -- Mark as character-pending (persisted).
+              WNTR_pendingCharacterSync[realmName][playerName][variantId] = true
 
-            -- Store the new skill level for future change detection.
-            WNTR_professionVariantToSkillLevel[realmName][playerName][variantId] = variantInfo.skillLevel
+              -- Mark the base profession as needing sync.
+              baseProfessionsNeedingSync[baseSkillLineId] = true
+
+              -- Store the new skill level for future change detection.
+              WNTR_professionVariantToSkillLevel[realmName][playerName][variantId] = variantInfo.skillLevel
+            end
           end
-        end
+
+        end  -- if type(variantId) == "number"
 
       end
 
