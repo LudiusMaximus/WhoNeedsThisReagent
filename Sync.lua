@@ -215,35 +215,42 @@ local function DoFetchAllRecipes(baseProfessionId, variantId)
 
     for _, recipeID in pairs(recipeIDs) do
       local recipeProfInfo = C_TradeSkillUI_GetProfessionInfoByRecipeID(recipeID)
-      local variantId = recipeProfInfo and recipeProfInfo.professionID or baseProfessionId
+      local variantId = recipeProfInfo and recipeProfInfo.professionID
 
-      -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.GetRecipeInfo
-      local recipeInfo = C_TradeSkillUI_GetRecipeInfo(recipeID)
+      -- Some recipes (e.g. https://www.wowhead.com/spell=399034/curried-coconut-crab) do not have a professioID,
+      -- even though they belong to a baseProfessionId.
+      -- But as the ingredients seem to be only quest items, we ignore them for this addon.
+      if variantId then
 
-      -- print("Recipe:", recipeInfo.name, "Recipe ID:", recipeID, "Learned:", recipeInfo.learned, "Relative Difficulty:", recipeInfo.relativeDifficulty)
+        -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.GetRecipeInfo
+        local recipeInfo = C_TradeSkillUI_GetRecipeInfo(recipeID)
 
-      if needsGlobalSync then
-        if recipeInfo and (recipeInfo.previousRecipeID or recipeInfo.nextRecipeID) then
-          WNTR_recipeToRank[recipeID] = GetRecipeRank(recipeInfo)
-          -- print("WNTR DEBUG rank:", recipeID, recipeInfo.name, "prev=", tostring(recipeInfo.previousRecipeID), "next=", tostring(recipeInfo.nextRecipeID), "rank=", WNTR_recipeToRank[recipeID])
-        end
-        if recipeInfo then
-          variantRecipeNames[variantId] = variantRecipeNames[variantId] or {}
-          variantRecipeNames[variantId][recipeID] = recipeInfo.name
-        end
-        if AddReagentsForRecipe(variantId, recipeID) == false then
-          print("|cffff0000WhoNeedsThisReagent:|r Aborting fetch for profession", baseProfessionId, "due to mismatch.")
-          return false
-        end
-      end
+        -- print("Recipe:", recipeInfo.name, "Recipe ID:", recipeID, "Learned:", recipeInfo.learned, "Relative Difficulty:", recipeInfo.relativeDifficulty)
 
-      if recipeInfo and recipeInfo.learned then
-        if AddOrUpdateCharacterRecipeDifficulty(realmName, playerName, variantId, recipeID, recipeInfo.relativeDifficulty) == false then
-          print("|cffff0000WhoNeedsThisReagent:|r Aborting fetch for profession", baseProfessionId, "due to mismatch.")
-          return false
+        if needsGlobalSync then
+          if recipeInfo and (recipeInfo.previousRecipeID or recipeInfo.nextRecipeID) then
+            WNTR_recipeToRank[recipeID] = GetRecipeRank(recipeInfo)
+            -- print("WNTR DEBUG rank:", recipeID, recipeInfo.name, "prev=", tostring(recipeInfo.previousRecipeID), "next=", tostring(recipeInfo.nextRecipeID), "rank=", WNTR_recipeToRank[recipeID])
+          end
+          if recipeInfo then
+            variantRecipeNames[variantId] = variantRecipeNames[variantId] or {}
+            variantRecipeNames[variantId][recipeID] = recipeInfo.name
+          end
+          if AddReagentsForRecipe(variantId, recipeID) == false then
+            print("|cffff0000WhoNeedsThisReagent:|r Aborting fetch for profession", baseProfessionId, "due to mismatch.")
+            return false
+          end
         end
-        learnedRecipeInfos[recipeID] = { info = recipeInfo, variantId = variantId }
-      end
+
+        if recipeInfo and recipeInfo.learned then
+          if AddOrUpdateCharacterRecipeDifficulty(realmName, playerName, variantId, recipeID, recipeInfo.relativeDifficulty) == false then
+            print("|cffff0000WhoNeedsThisReagent:|r Aborting fetch for profession", baseProfessionId, "due to mismatch.")
+            return false
+          end
+          learnedRecipeInfos[recipeID] = { info = recipeInfo, variantId = variantId }
+        end
+
+      end  -- if variantId
 
     end
 
@@ -420,8 +427,8 @@ local function OnEvent(self, event, ...)
       newRecipeTimer = nil
       ProcessNewRecipes()
     end)
-    
-  
+
+
 
   -- If we did a silent open, we want to prevent the profession UI from showing while it syncs.
   -- (HideUIPanel would close the session and prevent TRADE_SKILL_LIST_UPDATE.)
@@ -438,8 +445,8 @@ local function OnEvent(self, event, ...)
       ProfessionsFrame.hiddenByWhoNeedsThisReagent = ProfessionsFrame:GetAlpha()
       ProfessionsFrame:SetAlpha(0)
     end
-  
- 
+
+
 
   -- This event fires both for normal opens and for our silent open.
   elseif event == "TRADE_SKILL_LIST_UPDATE" then
@@ -481,7 +488,7 @@ local function OnEvent(self, event, ...)
 
 
     -- Normal (non-silent) flow: profession UI was opened by the user.
-    else 
+    else
 
       -- Only remove from pending if the fetch succeeds.
       local professionInfo = C_TradeSkillUI_GetBaseProfessionInfo()
@@ -662,34 +669,33 @@ end
 -- and remove stored data for professions the character no longer has.
 UpdateProfessions = function()
 
-  local realmName = GetRealmName()
+  local realmName  = GetRealmName()
   local playerName = UnitName("player")
 
-  wipe(pendingFetchProfessions)
-
-  -- Using this function to also store the player class.
+  -- Just using this function to store/update the player class.
+  -- "Update" because sometimes you delete a character and create another one with the same name but different class.
   AddOrUpdateCharacterToClass(realmName, playerName, select(2, UnitClass("player")))
 
-  -- https://warcraft.wiki.gg/wiki/API_GetProfessions
-  local spellTabIndexProf1, spellTabIndexProf2, _, _, spellTabIndexCooking = GetProfessions()
-
-  -- Track which base professions the character currently has (for cleanup of removed professions).
-  local currentBaseIds = {}
-
+  -- Initialize character specific saved variables if not present, and ensure the structure is correct.
   WNTR_professionVariantToSkillLevel[realmName] = WNTR_professionVariantToSkillLevel[realmName] or {}
   WNTR_professionVariantToSkillLevel[realmName][playerName] = WNTR_professionVariantToSkillLevel[realmName][playerName] or {}
   WNTR_pendingCharacterSync[realmName] = WNTR_pendingCharacterSync[realmName] or {}
   WNTR_pendingCharacterSync[realmName][playerName] = WNTR_pendingCharacterSync[realmName][playerName] or {}
 
+
   -- Pre-compute which base professions have any pending sync (global or character).
   -- Both pending tables are keyed by variant IDs, which always have a parentProfessionID.
   local baseProfessionsNeedingSync = {}
+
+  -- Check if we still have pending global syncs from last session.
   for variantId in pairs(WNTR_pendingGlobalSync) do
     local variantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
     if variantInfo and variantInfo.parentProfessionID then
       baseProfessionsNeedingSync[variantInfo.parentProfessionID] = true
     end
   end
+
+  -- Check if we still have pending character syncs from last session.
   for variantId in pairs(WNTR_pendingCharacterSync[realmName][playerName]) do
     local variantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
     if variantInfo and variantInfo.parentProfessionID then
@@ -697,31 +703,60 @@ UpdateProfessions = function()
     end
   end
 
+
+  -- Getting active profession here to compare against for potential immediate fetch in loop below.
   local activeProfInfo = C_TradeSkillUI_GetBaseProfessionInfo()
+
+  -- Track which base professions the character currently has (for cleanup of removed professions below).
+  local currentBaseIds = {}
+
+  -- After the loop, this will contain the updated list of professions that still need syncing.
+  wipe(pendingFetchProfessions)
+
+  -- Going through the character's current professions to detect changes since last check, and to cache icons.
+  -- https://warcraft.wiki.gg/wiki/API_GetProfessions
+  local spellTabIndexProf1, spellTabIndexProf2, _, _, spellTabIndexCooking = GetProfessions()
 
   for _, spellTabIndex in ipairs({spellTabIndexProf1, spellTabIndexProf2, spellTabIndexCooking}) do
     if spellTabIndex then
       local _, icon, _, _, _, _, baseSkillLineId = GetProfessionInfo(spellTabIndex)
+
+      -- Cache profession icon while we are at it.
       WNTR_professionSkillLineToIcon[baseSkillLineId] = icon
+
+      -- Remember that this is a currently known professions (for cleanup of removed professions below)
       currentBaseIds[baseSkillLineId] = true
 
-      -- Check stored variant levels for this base profession.
-      -- GetProfessionInfoBySkillLineID works without an open trade skill session,
-      -- but skillLevel may return 0 when the profession backend isn't active yet
-      -- (e.g. at login before any profession frame is opened). We guard against
-      -- that to avoid false-positive "skill changed" triggers on every login.
+      -- Check if this base profession has any variant data already stored for this character.
+      -- If not, we will schedule a sync for this profession regardless of whether the skill level appears to have changed.
       local hasAnyVariantData = false
+
       for variantId, prevLevel in pairs(WNTR_professionVariantToSkillLevel[realmName][playerName]) do
+
         local variantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
+
+        -- Is this a variant of the currently examined base profession?
         if variantInfo and variantInfo.parentProfessionID == baseSkillLineId then
+
+          -- We found at least one variant with stored data, so we only need to sync if the skill level changed.
           hasAnyVariantData = true
+
+          -- Has the skill level changed since the last sync?
+          -- GetProfessionInfoBySkillLineID works without an open trade skill session,
+          -- but skillLevel may return 0 when the profession backend is not active yet.
           if variantInfo.skillLevel > 0 and variantInfo.skillLevel ~= prevLevel then
-            -- Mark as character-pending (persisted) and update stored level.
+
+            -- Mark as character-pending (persisted).
             WNTR_pendingCharacterSync[realmName][playerName][variantId] = true
+
+            -- Mark the base profession as needing sync.
             baseProfessionsNeedingSync[baseSkillLineId] = true
+
+            -- Store the new skill level for future change detection.
             WNTR_professionVariantToSkillLevel[realmName][playerName][variantId] = variantInfo.skillLevel
           end
         end
+
       end
 
       if not hasAnyVariantData or baseProfessionsNeedingSync[baseSkillLineId] then
@@ -738,12 +773,13 @@ UpdateProfessions = function()
     PrintPendingFetchLink()
   end
 
+
   -- Clean up data for professions the character no longer has.
   if WNTR_recipeToDifficulty[realmName] and WNTR_recipeToDifficulty[realmName][playerName] then
     for variantId in pairs(WNTR_recipeToDifficulty[realmName][playerName]) do
       local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
-      local baseId = info and info.parentProfessionID or variantId
-      if not currentBaseIds[baseId] then
+      local baseId = info and info.parentProfessionID
+      if baseId and not currentBaseIds[baseId] then
         WNTR_recipeToDifficulty[realmName][playerName][variantId] = nil
       end
     end
@@ -751,8 +787,8 @@ UpdateProfessions = function()
   if WNTR_professionVariantToSkillLevel[realmName] and WNTR_professionVariantToSkillLevel[realmName][playerName] then
     for variantId in pairs(WNTR_professionVariantToSkillLevel[realmName][playerName]) do
       local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
-      local baseId = info and info.parentProfessionID or variantId
-      if not currentBaseIds[baseId] then
+      local baseId = info and info.parentProfessionID
+      if baseId and not currentBaseIds[baseId] then
         WNTR_professionVariantToSkillLevel[realmName][playerName][variantId] = nil
       end
     end
@@ -760,8 +796,8 @@ UpdateProfessions = function()
   if WNTR_pendingCharacterSync[realmName] and WNTR_pendingCharacterSync[realmName][playerName] then
     for variantId in pairs(WNTR_pendingCharacterSync[realmName][playerName]) do
       local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
-      local baseId = info and info.parentProfessionID or variantId
-      if not currentBaseIds[baseId] then
+      local baseId = info and info.parentProfessionID
+      if baseId and not currentBaseIds[baseId] then
         WNTR_pendingCharacterSync[realmName][playerName][variantId] = nil
       end
     end
