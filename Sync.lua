@@ -1,5 +1,10 @@
 local folderName, addon = ...
 
+local CONFIG_DEFAULTS = {
+  showPendingSyncMessages = true,
+  showStatusMessages      = true,
+}
+
 -- Cache of global WoW API tables/functions.
 local C_Timer_NewTicker                             = _G.C_Timer.NewTicker
 local C_Timer_NewTimer                              = _G.C_Timer.NewTimer
@@ -71,6 +76,7 @@ local function PrintPendingSyncLink()
   PrintPendingSyncLinkTimer = C_Timer_NewTimer(0.5, function()
     PrintPendingSyncLinkTimer = nil
     if #pendingBaseSkillLineIds == 0 then return end
+    if not WNTR_config.showPendingSyncMessages then return end
     local lines = "|cff00ccffWhoNeedsThisReagent:|r The following professions need synchronization:"
     for _, baseProfessionId in ipairs(pendingBaseSkillLineIds) do
       lines = lines .. "\n  - " .. C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseProfessionId).professionName
@@ -257,7 +263,9 @@ local function CompletePendingSync(baseSkillLineId)
       break
     end
   end
-  print("|cff00ccffWhoNeedsThisReagent:|r ...", C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, "synced successfully!")
+  if WNTR_config.showStatusMessages then
+    print("|cff00ccffWhoNeedsThisReagent:|r ...", C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, "synced successfully!")
+  end
   addon.UpdateMinimapGlow()
 end
 
@@ -285,16 +293,18 @@ local function FinishSilentOpen()
   silentOpenFrameWasShown = nil
 
   if #pendingBaseSkillLineIds > 0 then
-    local lines = "|cff00ccffWhoNeedsThisReagent:|r The following professions still need synchronization:"
-    for _, baseSkillLineId in ipairs(pendingBaseSkillLineIds) do
-      lines = lines .. "\n  - " .. C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName
+    if WNTR_config.showPendingSyncMessages then
+      local lines = "|cff00ccffWhoNeedsThisReagent:|r The following professions still need synchronization:"
+      for _, baseSkillLineId in ipairs(pendingBaseSkillLineIds) do
+        lines = lines .. "\n  - " .. C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName
+      end
+      if syncFromChat then
+        lines = lines .. "\nPress Enter again to proceed with the next."
+      else
+        lines = lines .. "\nOpen the profession frame, click the minimap button, or |cffff9900|Hitem:wntr:fetch|h[click here]|h|r and press Enter."
+      end
+      print(lines)
     end
-    if syncFromChat then
-      lines = lines .. "\nPress Enter again to proceed with the next."
-    else
-      lines = lines .. "\nOpen the profession frame, click the minimap button, or |cffff9900|Hitem:wntr:fetch|h[click here]|h|r and press Enter."
-    end
-    print(lines)
     if syncFromChat then
       ChatEdit_ActivateChat(DEFAULT_CHAT_FRAME.editBox)
       DEFAULT_CHAT_FRAME.editBox:SetText("/run SyncPendingProfession()")
@@ -317,7 +327,9 @@ function SyncPendingProfession(notFromChat)
   syncFromChat = not notFromChat
   
   if #pendingBaseSkillLineIds == 0 then
-    print("|cff00ccffWhoNeedsThisReagent:|r All professions are already synced.")
+    if WNTR_config.showStatusMessages then
+      print("|cff00ccffWhoNeedsThisReagent:|r All professions are already synced.")
+    end
     return
   end
   local baseSkillLineId = pendingBaseSkillLineIds[1]
@@ -326,7 +338,9 @@ function SyncPendingProfession(notFromChat)
   if not CharacterHasBaseProfession(baseSkillLineId) then return end
   
   
-  print("|cff00ccffWhoNeedsThisReagent:|r Starting synchronization of", C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, "...")
+  if WNTR_config.showStatusMessages then
+    print("|cff00ccffWhoNeedsThisReagent:|r Starting synchronization of", C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, "...")
+  end
   
   
   -- Always open the profession via OpenTradeSkill() to get a live backend.
@@ -519,6 +533,14 @@ local function EventFrameFunction(self, event, ...)
     end
     
     
+    -- Apply config defaults: remove obsolete keys, fill in missing ones.
+    for k in pairs(WNTR_config) do
+      if CONFIG_DEFAULTS[k] == nil then WNTR_config[k] = nil end
+    end
+    for k, v in pairs(CONFIG_DEFAULTS) do
+      if WNTR_config[k] == nil then WNTR_config[k] = v end
+    end
+
     -- Update character class, because sometimes you delete a character
     -- and create another one with the same name but different class.
     AddOrUpdateCharacterToClass(GetRealmName(), UnitName("player"), select(2, UnitClass("player")))
@@ -582,7 +604,9 @@ local function EventFrameFunction(self, event, ...)
               if retrySuccess then
                 CompletePendingSync(silentOpenProfessionId)
               else
-                print("|cff00ccffWhoNeedsThisReagent:|r Synchronization timed out. Professions backend did not respond within 2 seconds.")
+                if WNTR_config.showStatusMessages then
+                  print("|cff00ccffWhoNeedsThisReagent:|r Synchronization timed out. Professions backend did not respond within 2 seconds.")
+                end
               end
               FinishSilentOpen()
             end
@@ -623,7 +647,7 @@ local function EventFrameFunction(self, event, ...)
           CompletePendingSync(activeBaseSkillLineId)
           if #pendingBaseSkillLineIds > 0 then
             PrintPendingSyncLink()
-          else
+          elseif WNTR_config.showStatusMessages then
             print("|cff00ccffWhoNeedsThisReagent:|r All professions are now synced.")
           end
         end
