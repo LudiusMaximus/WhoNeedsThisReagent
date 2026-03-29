@@ -226,6 +226,10 @@ local function ShowSecondTooltip()
             end
             -- recipeName = recipeName .. " [" .. recipeID .. "]"  -- DEBUG: recipeID display
 
+            if WNTR_config.showUncollectedTransmog and WNTR_recipeWithUncollectedTransmog[recipeID] then
+              recipeName = recipeName .. " |A:Crosshair_Transmogrify_32:15:15|a"
+            end
+
             -- When a profession is maxed out, the API may still report learned recipes with
             -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).
             -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet.

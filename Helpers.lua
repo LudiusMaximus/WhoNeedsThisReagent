@@ -1,6 +1,7 @@
 local _, addon = ...
 
 -- Cache of global WoW API tables/functions.
+local C_TooltipInfo_GetRecipeResultItem          = _G.C_TooltipInfo.GetRecipeResultItem
 local C_TradeSkillUI_GetRecipeInfo               = _G.C_TradeSkillUI.GetRecipeInfo
 local C_TradeSkillUI_GetRecipeSchematic          = _G.C_TradeSkillUI.GetRecipeSchematic
 local GetProfessionInfo                          = _G.GetProfessionInfo
@@ -9,6 +10,7 @@ local PlaySound                                  = _G.PlaySound
 local StopSound                                  = _G.StopSound
 
 local sort                                       = _G.sort
+local string_gmatch                              = _G.string.gmatch
 local tinsert                                    = _G.tinsert
 
 
@@ -53,10 +55,14 @@ function addon.AddReagentsForRecipe(recipeId, variantSkillLineId)
         for _, reagent in pairs(reagentSlot.reagents) do
           -- Some reagents are currencies (reagent.currencyID) rather than items; skip those.
           if reagent.itemID then
-            -- Add reagent to recipe mapping.
+            -- Add reagent to recipe mapping (colon-delimited string of recipeIds).
             WNTR_reagentToRecipe[variantSkillLineId] = WNTR_reagentToRecipe[variantSkillLineId] or {}
-            WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] or {}
-            tinsert(WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID], recipeId)
+            local existing = WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID]
+            if existing then
+              WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = existing .. ":" .. recipeId
+            else
+              WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = tostring(recipeId)
+            end
           end
         end
       end
@@ -68,9 +74,10 @@ end
 function addon.GetRecipesForReagent(variantId, reagentId)
   local recipes = {}
   if WNTR_reagentToRecipe[variantId] then
-    if WNTR_reagentToRecipe[variantId][reagentId] then
-      for _, recipeId in pairs(WNTR_reagentToRecipe[variantId][reagentId]) do
-        tinsert(recipes, recipeId)
+    local str = WNTR_reagentToRecipe[variantId][reagentId]
+    if str then
+      for id in string_gmatch(str, "[^:]+") do
+        tinsert(recipes, tonumber(id))
       end
     end
   end
@@ -186,4 +193,24 @@ function addon.UpdateRecipeExperience(realmName, playerName, recipeId, recipeInf
       WNTR_recipeToExperience["nextLevels"][recipeId] = nextXP
     end
   end
+end
+
+
+-- Check whether a recipe produces an item whose transmog appearance has not yet been collected.
+-- C_TransmogCollection.PlayerHasTransmog(itemId) appears to be broken (always returns false),
+-- so we inspect the recipe result tooltip for TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN instead.
+function addon.UpdateUncollectedTransmog(recipeId)
+  local tooltipInfo = C_TooltipInfo_GetRecipeResultItem(recipeId)
+  if not tooltipInfo or not tooltipInfo.lines then
+    WNTR_recipeWithUncollectedTransmog[recipeId] = nil
+    return
+  end
+  -- Search from bottom to top, because the appearance line is typically near the end.
+  for i = #tooltipInfo.lines, 3, -1 do
+    if tooltipInfo.lines[i].leftText == TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN then
+      WNTR_recipeWithUncollectedTransmog[recipeId] = true
+      return
+    end
+  end
+  WNTR_recipeWithUncollectedTransmog[recipeId] = nil
 end

@@ -55,6 +55,11 @@ do
             function() return WNTR_config.showStatusMessages end,
             function() WNTR_config.showStatusMessages = not WNTR_config.showStatusMessages end
           )
+          menu:CreateCheckbox(
+            "Show uncollected transmog icon",
+            function() return WNTR_config.showUncollectedTransmog end,
+            function() WNTR_config.showUncollectedTransmog = not WNTR_config.showUncollectedTransmog end
+          )
         end)
       end
     end

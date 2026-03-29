@@ -3,6 +3,7 @@ local folderName, addon = ...
 local CONFIG_DEFAULTS = {
   showPendingSyncMessages = true,
   showStatusMessages      = true,
+  showUncollectedTransmog = true,
 }
 
 -- Cache of global WoW API tables/functions.
@@ -32,6 +33,7 @@ local CharacterHasBaseProfession                      = addon.CharacterHasBasePr
 local CorrectShadowlandsRankedRecipeDifficulty    = addon.CorrectShadowlandsRankedRecipeDifficulty
 local GetRecipeRank                               = addon.GetRecipeRank
 local UpdateRecipeExperience                      = addon.UpdateRecipeExperience
+local UpdateUncollectedTransmog                   = addon.UpdateUncollectedTransmog
 local StopLastSound                               = addon.StopLastSound
 local pendingBaseSkillLineIds                     = addon.pendingBaseSkillLineIds
 
@@ -179,6 +181,8 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
           WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId][recipeId] = recipeInfo.relativeDifficulty
 
         end
+
+        UpdateUncollectedTransmog(recipeId)
 
         -- If this recipe was a pending new recipe, ProcessNewRecipes() no longer needs to take care of it.
         if pendingNewRecipes[recipeId] then
