@@ -3,7 +3,6 @@ local folderName, addon = ...
 -- Cache of global WoW API tables/functions.
 local C_TradeSkillUI_GetProfessionInfoBySkillLineID = _G.C_TradeSkillUI.GetProfessionInfoBySkillLineID
 
-local table_concat                                  = _G.table.concat
 local tinsert                                       = _G.tinsert
 
 -- Cache addon tables/functions.
@@ -27,12 +26,10 @@ do
     function plugin.OnTooltipShow(tt)
       tt:AddLine("Who Needs This Reagent?")
       if #pendingBaseSkillLineIds > 0 then
-        local names = {}
-        for _, profId in ipairs(pendingBaseSkillLineIds) do
-          local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(profId)
-          tinsert(names, info and info.professionName or tostring(profId))
+        tt:AddLine("The following professions need synchronization:", 1, 0.5, 0)
+        for _, baseSkillLineId in ipairs(pendingBaseSkillLineIds) do
+          tt:AddLine("  - " .. C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, 1, 0.5, 0)
         end
-        tt:AddLine("Pending sync: " .. table_concat(names, ", "), 1, 0.5, 0)
       else
         tt:AddLine("All professions synced.", 0, 1, 0)
       end
@@ -48,6 +45,7 @@ do
     -- UpdateMinimapGlow() is called after every mutation of pendingBaseSkillLineIds.
     local glowTexture = nil
     local glowAnim = nil
+    local minimapButton = nil
 
     function addon.UpdateMinimapGlow()
       if not glowTexture then return end
@@ -59,6 +57,11 @@ do
       else
         glowAnim:Stop()
         glowTexture:Hide()
+      end
+      -- Refresh the tooltip if the cursor is still over our minimap button.
+      if minimapButton and minimapButton:IsMouseOver() then
+        local onEnter = minimapButton:GetScript("OnEnter")
+        if onEnter then onEnter(minimapButton) end
       end
     end
 
@@ -107,7 +110,7 @@ do
         end
 
         -- Create the glow overlay on the minimap button.
-        local minimapButton = icon:GetMinimapButton(folderName)
+        minimapButton = icon:GetMinimapButton(folderName)
         if minimapButton then
           glowTexture = minimapButton:CreateTexture(nil, "OVERLAY", nil, 1)
           -- Atlas "groupfinder-eye-highlight" as the glow texture.
