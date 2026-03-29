@@ -7,11 +7,11 @@ local table_concat                                  = _G.table.concat
 local tinsert                                       = _G.tinsert
 
 -- Cache addon tables/functions.
-local pendingFetchProfessions = addon.pendingFetchProfessions
+local pendingBaseSkillLineIds = addon.pendingBaseSkillLineIds
 
 
 -- Minimap icon via LibDataBroker + LibDBIcon.
--- UpdateMinimapGlow is called after every mutation of pendingFetchProfessions;
+-- UpdateMinimapGlow is called after every mutation of pendingBaseSkillLineIds;
 -- addon.UpdateMinimapGlow starts as a no-op (set in main.lua), overridden below if LDB is available.
 do
   local ldb = LibStub("LibDataBroker-1.1", true)
@@ -26,9 +26,9 @@ do
 
     function plugin.OnTooltipShow(tt)
       tt:AddLine("Who Needs This Reagent?")
-      if #pendingFetchProfessions > 0 then
+      if #pendingBaseSkillLineIds > 0 then
         local names = {}
-        for _, profId in ipairs(pendingFetchProfessions) do
+        for _, profId in ipairs(pendingBaseSkillLineIds) do
           local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(profId)
           tinsert(names, info and info.professionName or tostring(profId))
         end
@@ -45,13 +45,13 @@ do
     end
 
     -- Pulsating glow overlay to indicate pending professions.
-    -- UpdateMinimapGlow() is called after every mutation of pendingFetchProfessions.
+    -- UpdateMinimapGlow() is called after every mutation of pendingBaseSkillLineIds.
     local glowTexture = nil
     local glowAnim = nil
 
     function addon.UpdateMinimapGlow()
       if not glowTexture then return end
-      if #pendingFetchProfessions > 0 then
+      if #pendingBaseSkillLineIds > 0 then
         if not glowAnim:IsPlaying() then
           glowTexture:Show()
           glowAnim:Play()
