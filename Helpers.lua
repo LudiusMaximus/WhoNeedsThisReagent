@@ -1,7 +1,6 @@
 local _, addon = ...
 
 -- Cache of global WoW API tables/functions.
-local C_TradeSkillUI_GetProfessionInfoByRecipeID = _G.C_TradeSkillUI.GetProfessionInfoByRecipeID
 local C_TradeSkillUI_GetRecipeInfo               = _G.C_TradeSkillUI.GetRecipeInfo
 local C_TradeSkillUI_GetRecipeSchematic          = _G.C_TradeSkillUI.GetRecipeSchematic
 local GetProfessionInfo                          = _G.GetProfessionInfo
@@ -24,12 +23,12 @@ function addon.StopLastSound()
   end
 end
 
-function addon.CharacterHasProfession(professionId)
+function addon.CharacterHasBaseProfession(requestedBaseSkillLineId)
   local spellTabIndexProf1, spellTabIndexProf2, _, _, spellTabIndexCooking = GetProfessions()
   for _, spellTabIndex in ipairs({spellTabIndexProf1, spellTabIndexProf2, spellTabIndexCooking}) do
     if spellTabIndex then
-      local _, _, _, _, _, _, tradeSkillLineId = GetProfessionInfo(spellTabIndex)
-      if tradeSkillLineId == professionId then
+      local _, _, _, _, _, _, baseSkillLineId = GetProfessionInfo(spellTabIndex)
+      if baseSkillLineId == requestedBaseSkillLineId then
         return true
       end
     end
@@ -38,38 +37,16 @@ function addon.CharacterHasProfession(professionId)
 end
 
 
-function addon.AddOrUpdateCharacterToClass(realm, character, classFilename)
-  WNTR_characterToClass[realm] = WNTR_characterToClass[realm] or {}
-  WNTR_characterToClass[realm][character] = classFilename
+function addon.AddOrUpdateCharacterToClass(realmName, playerName, classFilename)
+  WNTR_characterToClass[realmName] = WNTR_characterToClass[realmName] or {}
+  WNTR_characterToClass[realmName][playerName] = classFilename
 end
 
 
-function addon.AddOrUpdateCharacterRecipeDifficulty(realm, character, variantId, recipeId, difficulty)
-  -- Double-check that the recipe actually belongs to the profession variant.
-  local profInfoCheck = C_TradeSkillUI_GetProfessionInfoByRecipeID(recipeId)
-  if not profInfoCheck or (profInfoCheck.professionID ~= 0 and profInfoCheck.professionID ~= variantId) then
-    print("|cffff0000WhoNeedsThisReagent:|r variantId mismatch in AddOrUpdateCharacterRecipeDifficulty: our variantId=" .. tostring(variantId) .. ", game variantId=" .. tostring(profInfoCheck and profInfoCheck.professionID) .. ", recipeId=" .. tostring(recipeId))
-    return false
-  end
 
-  WNTR_recipeToDifficulty[realm] = WNTR_recipeToDifficulty[realm] or {}
-  WNTR_recipeToDifficulty[realm][character] = WNTR_recipeToDifficulty[realm][character] or {}
-  WNTR_recipeToDifficulty[realm][character][variantId] = WNTR_recipeToDifficulty[realm][character][variantId] or {}
-  WNTR_recipeToDifficulty[realm][character][variantId][recipeId] = difficulty
-  return true
-end
-
-
-function addon.AddReagentsForRecipe(variantId, recipeID)
-  -- Double-check that the recipe actually belongs to the profession variant.
-  local profInfoCheck = C_TradeSkillUI_GetProfessionInfoByRecipeID(recipeID)
-  if not profInfoCheck or (profInfoCheck.professionID ~= 0 and profInfoCheck.professionID ~= variantId) then
-    print("|cffff0000WhoNeedsThisReagent:|r variantId mismatch in AddReagentsForRecipe: our variantId=" .. tostring(variantId) .. ", game variantId=" .. tostring(profInfoCheck and profInfoCheck.professionID) .. ", recipeId=" .. tostring(recipeID))
-    return false
-  end
-
+function addon.AddReagentsForRecipe(recipeId, variantSkillLineId)
   -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.GetRecipeSchematic
-  local schematic = C_TradeSkillUI_GetRecipeSchematic(recipeID, false)
+  local schematic = C_TradeSkillUI_GetRecipeSchematic(recipeId, false)
   if schematic and schematic.reagentSlotSchematics then
     for _, reagentSlot in pairs(schematic.reagentSlotSchematics) do
       if reagentSlot.reagents then
@@ -77,15 +54,14 @@ function addon.AddReagentsForRecipe(variantId, recipeID)
           -- Some reagents are currencies (reagent.currencyID) rather than items; skip those.
           if reagent.itemID then
             -- Add reagent to recipe mapping.
-            WNTR_reagentToRecipe[variantId] = WNTR_reagentToRecipe[variantId] or {}
-            WNTR_reagentToRecipe[variantId][reagent.itemID] = WNTR_reagentToRecipe[variantId][reagent.itemID] or {}
-            tinsert(WNTR_reagentToRecipe[variantId][reagent.itemID], recipeID)
+            WNTR_reagentToRecipe[variantSkillLineId] = WNTR_reagentToRecipe[variantSkillLineId] or {}
+            WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] or {}
+            tinsert(WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID], recipeId)
           end
         end
       end
     end
   end
-  return true
 end
 
 
@@ -123,27 +99,34 @@ function addon.GetRecipeRank(recipeInfo)
   return 0
 end
 
--- For recipes without previousRecipeID/nextRecipeID chain data (e.g. Shadowlands),
--- detect rank groups by matching recipe names and assign ranks by sorted recipeID.
--- NOTE: This heuristic (same name + ascending recipeID = ascending rank) only works for
+-- For ranked Shadowlands recipes without the previousRecipeID/nextRecipeID logic,
+-- detect rank groups by matching recipe names and assign ranks by sorted recipeId.
+-- NOTE: This heuristic (same name + ascending recipeId = ascending rank) only works for
 -- Shadowlands. For Legion/BfA it was found to produce incorrect results: the chain fields
 -- (previousRecipeID/nextRecipeID) indicate the true rank order, which does NOT always
--- correspond to ascending recipeID. Those recipes are handled by GetRecipeRank() above and
--- are skipped here via the `if not WNTR_recipeToRank[recipeID]` guard.
-function addon.AssignRanksByName(recipeNames)
-  -- recipeNames: { [recipeID] = recipeName, ... }
-  local nameToIds = {}
-  for recipeID, name in pairs(recipeNames) do
-    if not WNTR_recipeToRank[recipeID] then
-      nameToIds[name] = nameToIds[name] or {}
-      tinsert(nameToIds[name], recipeID)
+-- correspond to ascending recipeId. Those recipes are handled by GetRecipeRank() and
+-- are skipped here via the `if not WNTR_recipeToRank[recipeId]` guard.
+-- Have to make sure that AssignRanksByName is run after WNTR_recipeToRank was filled using GetRecipeRank().
+function addon.AssignRanksByName(variantRecipeInfos)
+  -- variantRecipeInfos: { [recipeId] = recipeInfo }
+  
+  -- For each recipe name, create a list of associated IDs.
+  local recipeNameToIds = {}
+  for recipeId, recipeInfo in pairs(variantRecipeInfos) do
+    local recipeName = recipeInfo.name
+    -- Ranked Legion/BfA recipes have the same names too, but we need to exclude them here.
+    if not WNTR_recipeToRank[recipeId] then
+      recipeNameToIds[recipeName] = recipeNameToIds[recipeName] or {}
+      tinsert(recipeNameToIds[recipeName], recipeId)
     end
   end
-  for name, ids in pairs(nameToIds) do
-    if #ids > 1 then
-      sort(ids)
-      for rank, recipeID in ipairs(ids) do
-        WNTR_recipeToRank[recipeID] = rank
+  
+  -- For every name with more than one ID, sort the IDs, leading to the rank for each ID.
+  for recipeName, recipeIds in pairs(recipeNameToIds) do
+    if #recipeIds > 1 then
+      sort(recipeIds)
+      for rank, recipeId in ipairs(recipeIds) do
+        WNTR_recipeToRank[recipeId] = rank
       end
     end
   end
@@ -156,28 +139,28 @@ end
 -- Detection: a Shadowlands ranked recipe has a rank but no chain fields (previousRecipeID/nextRecipeID).
 -- Fix: after AssignRanksByName has populated WNTR_recipeToRank, compare the recipe's rank to
 -- unlockedRecipeLevel to determine the true learned/difficulty state.
-function addon.CorrectShadowlandsRankedRecipeDifficulty(realm, character, recipeID, recipeInfo, variantId)
+function addon.CorrectShadowlandsRankedRecipeDifficulty(realmName, playerName, recipeId, recipeInfo, variantSkillLineId)
   if not recipeInfo then return end
   -- Only apply to Shadowlands-style ranked recipes (no chain fields).
   if recipeInfo.previousRecipeID or recipeInfo.nextRecipeID then return end
-  local rank = WNTR_recipeToRank[recipeID]
+  local rank = WNTR_recipeToRank[recipeId]
   if not rank then return end
   local unlockedLevel = recipeInfo.unlockedRecipeLevel
   if not unlockedLevel or unlockedLevel == 0 then return end
 
-  local charRecipes = WNTR_recipeToDifficulty[realm]
-      and WNTR_recipeToDifficulty[realm][character]
-      and WNTR_recipeToDifficulty[realm][character][variantId]
+  local charRecipes = WNTR_recipeToDifficulty[realmName]
+      and WNTR_recipeToDifficulty[realmName][playerName]
+      and WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId]
   if not charRecipes then return end
 
   if rank > unlockedLevel then
     -- API incorrectly reports as learned; remove it.
-    charRecipes[recipeID] = nil
+    charRecipes[recipeId] = nil
   elseif rank < unlockedLevel then
     -- Already fully mastered; mark as trivial and clear any stale XP data.
-    charRecipes[recipeID] = 3
-    if WNTR_recipeToExperience[realm] and WNTR_recipeToExperience[realm][character] then
-      WNTR_recipeToExperience[realm][character][recipeID] = nil
+    charRecipes[recipeId] = 3
+    if WNTR_recipeToExperience[realmName] and WNTR_recipeToExperience[realmName][playerName] then
+      WNTR_recipeToExperience[realmName][playerName][recipeId] = nil
     end
   end
   -- rank == unlockedLevel: currently being worked on; keep the stored difficulty as-is.
@@ -186,9 +169,9 @@ end
 
 -- Store recipe rank XP progress for a learned ranked recipe.
 -- Only stores data for the rank currently being worked on (where rank == unlockedRecipeLevel).
-function addon.UpdateRecipeExperience(realm, character, recipeID, recipeInfo)
-  if not recipeInfo or not WNTR_recipeToRank[recipeID] then return end
-  local rank = WNTR_recipeToRank[recipeID]
+function addon.UpdateRecipeExperience(realmName, playerName, recipeId, recipeInfo)
+  if not recipeInfo or not WNTR_recipeToRank[recipeId] then return end
+  local rank = WNTR_recipeToRank[recipeId]
   local unlockedLevel = recipeInfo.unlockedRecipeLevel
   if not unlockedLevel or unlockedLevel == 0 then return end
 
@@ -196,11 +179,11 @@ function addon.UpdateRecipeExperience(realm, character, recipeID, recipeInfo)
     local currentXP = recipeInfo.currentRecipeExperience
     local nextXP = recipeInfo.nextLevelRecipeExperience
     if currentXP and nextXP and nextXP > 0 then
-      WNTR_recipeToExperience[realm] = WNTR_recipeToExperience[realm] or {}
-      WNTR_recipeToExperience[realm][character] = WNTR_recipeToExperience[realm][character] or {}
-      WNTR_recipeToExperience[realm][character][recipeID] = currentXP
+      WNTR_recipeToExperience[realmName]              = WNTR_recipeToExperience[realmName] or {}
+      WNTR_recipeToExperience[realmName][playerName]  = WNTR_recipeToExperience[realmName][playerName] or {}
+      WNTR_recipeToExperience[realmName][playerName][recipeId] = currentXP
       WNTR_recipeToExperience["nextLevels"] = WNTR_recipeToExperience["nextLevels"] or {}
-      WNTR_recipeToExperience["nextLevels"][recipeID] = nextXP
+      WNTR_recipeToExperience["nextLevels"][recipeId] = nextXP
     end
   end
 end

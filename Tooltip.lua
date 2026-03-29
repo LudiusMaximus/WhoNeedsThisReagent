@@ -140,6 +140,11 @@ end
 
 local function ShowSecondTooltip()
 
+  -- Read GameTooltip's anchor point before any addon code can taint it.
+  -- GetPoint() returns a tainted string if called after we've touched GameTooltip,
+  -- causing "attempt to compare a secret string value" errors.
+  local gameTooltipAnchor = GameTooltip:GetPoint(1)
+
   -- Be fast in the standard case.
   if not IsModifiedClick("COMPAREITEMS") or not GameTooltip:IsShown() then
     -- Inlining HideSecondTooltip() condition for efficiency.
@@ -443,7 +448,7 @@ local function ShowSecondTooltip()
   tooltipFrame:SetSize(totalWidth, totalHeight)
   tooltipFrame:ClearAllPoints()
 
-  if GameTooltip:GetPoint(1) == "BOTTOMLEFT" then
+  if gameTooltipAnchor == "BOTTOMLEFT" then
     tooltipFrame:SetPoint("TOPLEFT", GameTooltip, "TOPRIGHT", 0, -10)
   else
     tooltipFrame:SetPoint("TOPRIGHT", GameTooltip, "TOPLEFT", 0, -10)
