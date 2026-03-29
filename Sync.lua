@@ -72,9 +72,8 @@ local function PrintPendingSyncLink()
     PrintPendingSyncLinkTimer = nil
     if #pendingBaseSkillLineIds == 0 then return end
     local lines = "|cff00ccffWhoNeedsThisReagent:|r The following professions need synchronization:"
-    for _, profId in ipairs(pendingBaseSkillLineIds) do
-      local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(profId)
-      lines = lines .. "\n  - " .. (info and info.professionName or tostring(profId))
+    for _, baseProfessionId in ipairs(pendingBaseSkillLineIds) do
+      lines = lines .. "\n  - " .. C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseProfessionId).professionName
     end
     lines = lines .. "\nOpen the profession frame, click the minimap button, or |cffff9900|Hitem:wntr:fetch|h[click here]|h|r and press Enter."
     print(lines)
@@ -178,9 +177,7 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
         -- If this recipe was a pending new recipe, ProcessNewRecipes() no longer needs to take care of it.
         if pendingNewRecipes[recipeId] then
           pendingNewRecipes[recipeId] = nil
-          print("SyncVariantProfession already took care of pending new recipe", recipeId)
         end
-
       
       end -- if recipeInfo
     end -- if C_TradeSkillUI_IsRecipeInSkillLine(recipeId, variantSkillLineId
@@ -260,8 +257,7 @@ local function CompletePendingSync(baseSkillLineId)
       break
     end
   end
-  local baseProfessionName = C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName
-  print("|cff00ccffWhoNeedsThisReagent:|r ...", baseProfessionName, "synced successfully!")
+  print("|cff00ccffWhoNeedsThisReagent:|r ...", C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, "synced successfully!")
   addon.UpdateMinimapGlow()
 end
 
@@ -290,9 +286,8 @@ local function FinishSilentOpen()
 
   if #pendingBaseSkillLineIds > 0 then
     local lines = "|cff00ccffWhoNeedsThisReagent:|r The following professions still need synchronization:"
-    for _, profId in ipairs(pendingBaseSkillLineIds) do
-      local info = C_TradeSkillUI_GetProfessionInfoBySkillLineID(profId)
-      lines = lines .. "\n  - " .. (info and info.professionName or tostring(profId))
+    for _, baseSkillLineId in ipairs(pendingBaseSkillLineIds) do
+      lines = lines .. "\n  - " .. C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName
     end
     if syncFromChat then
       lines = lines .. "\nPress Enter again to proceed with the next."
@@ -331,8 +326,7 @@ function SyncPendingProfession(notFromChat)
   if not CharacterHasBaseProfession(baseSkillLineId) then return end
   
   
-  local baseProfessionName = C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName
-  print("|cff00ccffWhoNeedsThisReagent:|r Starting synchronization of", baseProfessionName, "...")
+  print("|cff00ccffWhoNeedsThisReagent:|r Starting synchronization of", C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, "...")
   
   
   -- Always open the profession via OpenTradeSkill() to get a live backend.
@@ -357,7 +351,7 @@ local function ProcessNewRecipes()
   WNTR_pendingCharacterSync[realmName] = WNTR_pendingCharacterSync[realmName] or {}
   WNTR_pendingCharacterSync[realmName][playerName] = WNTR_pendingCharacterSync[realmName][playerName] or {}
   for recipeId, variantSkillLineId in pairs(pendingNewRecipes) do
-    print("ProcessNewRecipes processing:", recipeId, variantSkillLineId)
+    -- print("ProcessNewRecipes processing:", recipeId, variantSkillLineId)
     WNTR_pendingCharacterSync[realmName][playerName][variantSkillLineId] = true
   end
   wipe(pendingNewRecipes)
@@ -376,11 +370,8 @@ end
 -- and remove stored data for professions the character no longer has.
 local function UpdateProfessions()
 
-  print("UpdateProfessions")
-
   local realmName  = GetRealmName()
   local playerName = UnitName("player")
-
 
   -- Initialize character specific saved variables if not present.
   WNTR_variantToSkillLevel[realmName] = WNTR_variantToSkillLevel[realmName] or {}
@@ -388,7 +379,6 @@ local function UpdateProfessions()
   
   WNTR_pendingCharacterSync[realmName] = WNTR_pendingCharacterSync[realmName] or {}
   WNTR_pendingCharacterSync[realmName][playerName] = WNTR_pendingCharacterSync[realmName][playerName] or {}
-
 
 
   -- Track which base professions the character currently has (for possible cleanup of removed professions below).
@@ -679,7 +669,7 @@ local function EventFrameFunction(self, event, ...)
     -- If variantSkillLineId is nil (recipe not yet in the mapping because no global sync has run yet),
     -- the entry below is a Lua no-op, but the profession is already pending a full sync which will cover this recipe.
     local variantSkillLineId = WNTR_recipeToVariant[recipeId]
-    print("NEW_RECIPE_LEARNED", recipeId, variantSkillLineId, WNTR_variantToBaseProfession[variantSkillLineId])
+    -- print("NEW_RECIPE_LEARNED", recipeId, variantSkillLineId, WNTR_variantToBaseProfession[variantSkillLineId])
   
     -- Sometimes (e.g. when learning a new profession) we learn several recipes at once.
     -- So we wait until there were no NEW_RECIPE_LEARNED for 0.5 seconds before processing.
