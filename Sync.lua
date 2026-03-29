@@ -13,6 +13,7 @@ local C_TradeSkillUI_CloseTradeSkill                = _G.C_TradeSkillUI.CloseTra
 local C_TradeSkillUI_GetAllRecipeIDs                = _G.C_TradeSkillUI.GetAllRecipeIDs
 local C_TradeSkillUI_GetBaseProfessionInfo          = _G.C_TradeSkillUI.GetBaseProfessionInfo
 local C_TradeSkillUI_GetChildProfessionInfos        = _G.C_TradeSkillUI.GetChildProfessionInfos
+local C_TradeSkillUI_GetProfessionInfoByRecipeID    = _G.C_TradeSkillUI.GetProfessionInfoByRecipeID
 local C_TradeSkillUI_GetProfessionInfoBySkillLineID = _G.C_TradeSkillUI.GetProfessionInfoBySkillLineID
 local C_TradeSkillUI_GetRecipeInfo                  = _G.C_TradeSkillUI.GetRecipeInfo
 local C_TradeSkillUI_IsRecipeInSkillLine            = _G.C_TradeSkillUI.IsRecipeInSkillLine
@@ -22,6 +23,7 @@ local GetProfessions                                = _G.GetProfessions
 local GetRealmName                                  = _G.GetRealmName
 local UnitName                                      = _G.UnitName
 
+local string_find                                   = _G.string.find
 local table_remove                                  = _G.table.remove
 local tinsert                                       = _G.tinsert
 
@@ -160,10 +162,16 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
 
           AddReagentsForRecipe(recipeId, variantSkillLineId)
 
-          -- Store the authoritative recipe-to-variant mapping.
+          -- Store the authoritative variant-to-recipes mapping (colon-delimited string).
           -- IsRecipeInSkillLine() is reliable here because the backend is active.
-          -- We overwrite rather than wipe, preserving entries from other characters' professions.
-          WNTR_recipeToVariant[recipeId] = variantSkillLineId
+          -- We append rather than wipe, preserving entries from other characters' professions.
+          local existing = WNTR_variantToRecipes[variantSkillLineId]
+          local recipeStr = tostring(recipeId)
+          if not existing then
+            WNTR_variantToRecipes[variantSkillLineId] = recipeStr
+          elseif not string_find(":" .. existing .. ":", ":" .. recipeStr .. ":", 1, true) then
+            WNTR_variantToRecipes[variantSkillLineId] = existing .. ":" .. recipeStr
+          end
 
           -- Is this a Legion/Shadowlands ranked recipe?
           if recipeInfo.previousRecipeID or recipeInfo.nextRecipeID then
@@ -685,22 +693,45 @@ local function EventFrameFunction(self, event, ...)
     if not recipeId then return end
 
 
+    -- Determine which variant this recipe belongs to.
     -- GetProfessionInfoByRecipeID() is unreliable for some recipes:
     --   - For some recipes (like https://www.wowhead.com/spell=399034/curried-coconut-crab),
     --     GetProfessionInfoByRecipeID() does not return a variant skillLineId,
     --     but instead their base skillLineId. Even though IsRecipeInSkillLine() returns true when
-    --     you are testing the recipeId  with the variantSkillLineId.
+    --     you are testing the recipeId with the variantSkillLineId.
     --   - Similarly, "Techniques" like https://www.wowhead.com/spell=194171/unbroken-claw also return their base skillLineId.
     --   - And then there are some MoP recipes for which professionID and parentProfessionID seem to be swapped
     --     (e.g. for https://www.wowhead.com/spell=124052/ginseng-tea professionID is 980 and parentProfessionID is 2544).
-    -- That's why we use our own recorded mapping.
-    -- If variantSkillLineId is nil (recipe not yet in the mapping because no global sync has run yet),
-    -- the entry below is a Lua no-op, but the profession is already pending a full sync which will cover this recipe.
-    local variantSkillLineId = WNTR_recipeToVariant[recipeId]
-    -- print("NEW_RECIPE_LEARNED", recipeId, variantSkillLineId, WNTR_variantToBaseProfession[variantSkillLineId])
+    -- Strategy: try the API first, fall back to scanning WNTR_variantToRecipes only when needed.
+    local variantSkillLineId = nil
+    local profInfo = C_TradeSkillUI_GetProfessionInfoByRecipeID(recipeId)
+    if profInfo then
+      if WNTR_variantToBaseProfession[profInfo.professionID] then
+        -- professionID is a known variant.
+        variantSkillLineId = profInfo.professionID
+      elseif profInfo.parentProfessionID and WNTR_variantToBaseProfession[profInfo.parentProfessionID] then
+        -- parentProfessionID is a known variant (swapped IDs case).
+        variantSkillLineId = profInfo.parentProfessionID
+      else
+        -- API returned a base ID or something unexpected. Scan WNTR_variantToRecipes
+        -- for variants of this base profession only.
+        local baseId = profInfo.professionID
+        local recipeStr = tostring(recipeId)
+        for candidateVariant, recipesStr in pairs(WNTR_variantToRecipes) do
+          if WNTR_variantToBaseProfession[candidateVariant] == baseId
+              and string_find(":" .. recipesStr .. ":", ":" .. recipeStr .. ":", 1, true) then
+            variantSkillLineId = candidateVariant
+            break
+          end
+        end
+      end
+    end
+    -- print("NEW_RECIPE_LEARNED", recipeId, variantSkillLineId)
   
     -- Sometimes (e.g. when learning a new profession) we learn several recipes at once.
     -- So we wait until there were no NEW_RECIPE_LEARNED for 0.5 seconds before processing.
+    -- If variantSkillLineId is nil (recipe not yet in the mapping because no global sync has run yet),
+    -- the entry below is a Lua no-op, but the profession is already pending a full sync which will cover this recipe.
     pendingNewRecipes[recipeId] = variantSkillLineId
 
     if newRecipeTimer then
