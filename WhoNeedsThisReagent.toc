@@ -5,7 +5,7 @@
 ## Author: LudiusMaximus
 ## Notes: Displays in a crafting reagent's tooltip which of your alts could need it for what (and possibly skill up).
 ## OptionalDeps: Bagnon
-## SavedVariables: WNTR_recipeToDifficulty, WNTR_reagentToRecipe, WNTR_recipeToRank, WNTR_characterToClass, WNTR_professionSkillLineToIcon, WNTR_professionVariantToSkillLevel, WNTR_recipeToExperience, WNTR_variantToBaseProfession, WNTR_recipeIdToVariantSkillLineId, WNTR_pendingGlobalSync, WNTR_pendingCharacterSync, WNTR_whoNeedsThisReagentIconDB
+## SavedVariables: WNTR_reagentToRecipe, WNTR_recipeToVariant, WNTR_recipeToDifficulty, WNTR_recipeToRank, WNTR_recipeToExperience, WNTR_variantToSkillLevel, WNTR_variantToBaseProfession, WNTR_pendingGlobalSync, WNTR_pendingCharacterSync, WNTR_professionSkillLineToIcon, WNTR_characterToClass, WNTR_whoNeedsThisReagentIconDB
 
 embeds.xml
 main.lua
