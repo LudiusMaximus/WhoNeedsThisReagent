@@ -30,15 +30,33 @@ do
         for _, baseSkillLineId in ipairs(pendingBaseSkillLineIds) do
           tt:AddLine("  - " .. C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, 1, 0.5, 0)
         end
+        tt:AddLine(" ")
+        tt:AddLine("Click to sync pending professions.", 0.2, 1, 0.2)
       else
         tt:AddLine("All professions synced.", 0, 1, 0)
       end
-      tt:AddLine(" ")
-      tt:AddLine("Click to sync pending professions.", 0.2, 1, 0.2)
     end
 
     function plugin.OnClick(self, button)
-      SyncPendingProfession(true)
+      if button == "LeftButton" then
+        if #pendingBaseSkillLineIds > 0 then
+          SyncPendingProfession(true)
+        end
+      elseif button == "RightButton" then
+        MenuUtil.CreateContextMenu(UIParent, function(_, menu)
+          menu:CreateTitle("Who Needs This Reagent?")
+          menu:CreateCheckbox(
+            "Show pending sync messages",
+            function() return WNTR_config.showPendingSyncMessages end,
+            function() WNTR_config.showPendingSyncMessages = not WNTR_config.showPendingSyncMessages end
+          )
+          menu:CreateCheckbox(
+            "Show status messages",
+            function() return WNTR_config.showStatusMessages end,
+            function() WNTR_config.showStatusMessages = not WNTR_config.showStatusMessages end
+          )
+        end)
+      end
     end
 
     -- Pulsating glow overlay to indicate pending professions.

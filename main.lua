@@ -56,6 +56,9 @@ WNTR_recipeToVariant = WNTR_recipeToVariant or {}
 -- LibDBIcon minimap button position/state.
 WNTR_whoNeedsThisReagentIconDB = WNTR_whoNeedsThisReagentIconDB or {}
 
+-- User-facing configuration options. Defaults are applied in Sync.lua's ADDON_LOADED handler.
+WNTR_config = WNTR_config or {}
+
 
 -- Persistent pending-sync tracking (survives reloads).
 -- WNTR_pendingGlobalSync[variantSkillLineId] = true: variant's reagent/rank data needs rebuilding (any character can fulfill).
