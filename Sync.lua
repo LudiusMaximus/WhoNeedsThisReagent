@@ -156,7 +156,7 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
           -- Store the authoritative recipe-to-variant mapping.
           -- IsRecipeInSkillLine() is reliable here because the backend is active.
           -- We overwrite rather than wipe, preserving entries from other characters' professions.
-          WNTR_recipeIdToVariantSkillLineId[recipeId] = variantSkillLineId
+          WNTR_recipeToVariant[recipeId] = variantSkillLineId
 
           -- Is this a Legion/Shadowlands ranked recipe?
           if recipeInfo.previousRecipeID or recipeInfo.nextRecipeID then
@@ -210,11 +210,11 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
     if variantInfo.parentProfessionID then
       WNTR_variantToBaseProfession[variantSkillLineId] = variantInfo.parentProfessionID
     end
-    WNTR_professionVariantToSkillLevel[realmName] = WNTR_professionVariantToSkillLevel[realmName] or {}
-    WNTR_professionVariantToSkillLevel[realmName][playerName] = WNTR_professionVariantToSkillLevel[realmName][playerName] or {}
-    WNTR_professionVariantToSkillLevel[realmName][playerName][variantSkillLineId] = variantInfo.skillLevel
-    WNTR_professionVariantToSkillLevel[realmName][playerName]["maxLevels"] = WNTR_professionVariantToSkillLevel[realmName][playerName]["maxLevels"] or {}
-    WNTR_professionVariantToSkillLevel[realmName][playerName]["maxLevels"][variantSkillLineId] = variantInfo.maxSkillLevel
+    WNTR_variantToSkillLevel[realmName] = WNTR_variantToSkillLevel[realmName] or {}
+    WNTR_variantToSkillLevel[realmName][playerName] = WNTR_variantToSkillLevel[realmName][playerName] or {}
+    WNTR_variantToSkillLevel[realmName][playerName][variantSkillLineId] = variantInfo.skillLevel
+    WNTR_variantToSkillLevel[realmName][playerName]["maxLevels"] = WNTR_variantToSkillLevel[realmName][playerName]["maxLevels"] or {}
+    WNTR_variantToSkillLevel[realmName][playerName]["maxLevels"][variantSkillLineId] = variantInfo.maxSkillLevel
   end
 
   -- Mark this variant as no longer pending for character specific sync.
@@ -383,8 +383,8 @@ local function UpdateProfessions()
 
 
   -- Initialize character specific saved variables if not present.
-  WNTR_professionVariantToSkillLevel[realmName] = WNTR_professionVariantToSkillLevel[realmName] or {}
-  WNTR_professionVariantToSkillLevel[realmName][playerName] = WNTR_professionVariantToSkillLevel[realmName][playerName] or {}
+  WNTR_variantToSkillLevel[realmName] = WNTR_variantToSkillLevel[realmName] or {}
+  WNTR_variantToSkillLevel[realmName][playerName] = WNTR_variantToSkillLevel[realmName][playerName] or {}
   
   WNTR_pendingCharacterSync[realmName] = WNTR_pendingCharacterSync[realmName] or {}
   WNTR_pendingCharacterSync[realmName][playerName] = WNTR_pendingCharacterSync[realmName][playerName] or {}
@@ -418,7 +418,7 @@ local function UpdateProfessions()
       local hasPendingVariants = false
 
       -- Compare previous profession level with current one to detect changes.
-      for variantSkillLineId, prevLevel in pairs(WNTR_professionVariantToSkillLevel[realmName][playerName]) do
+      for variantSkillLineId, prevLevel in pairs(WNTR_variantToSkillLevel[realmName][playerName]) do
 
         -- Skipping the "maxLevels" entry, which is not a real variant and does not have a parentProfessionID.
         if type(variantSkillLineId) == "number" then
@@ -439,7 +439,7 @@ local function UpdateProfessions()
               WNTR_pendingCharacterSync[realmName][playerName][variantSkillLineId] = true
 
               -- Store the new skill level for future change detection.
-              WNTR_professionVariantToSkillLevel[realmName][playerName][variantSkillLineId] = variantProfessionInfo.skillLevel
+              WNTR_variantToSkillLevel[realmName][playerName][variantSkillLineId] = variantProfessionInfo.skillLevel
             end
 
             -- Check if this variant has a pending sync (fresh or from previous session).
@@ -472,13 +472,13 @@ local function UpdateProfessions()
       end
     end
   end
-  if WNTR_professionVariantToSkillLevel[realmName] and WNTR_professionVariantToSkillLevel[realmName][playerName] then
-    for variantSkillLineId in pairs(WNTR_professionVariantToSkillLevel[realmName][playerName]) do
+  if WNTR_variantToSkillLevel[realmName] and WNTR_variantToSkillLevel[realmName][playerName] then
+    for variantSkillLineId in pairs(WNTR_variantToSkillLevel[realmName][playerName]) do
       -- Skipping the "maxLevels" entry.
       if type(variantSkillLineId) == "number" then
         local baseSkillLineId = GetBaseOfVariant(variantSkillLineId)
         if baseSkillLineId and not currentBaseIds[baseSkillLineId] then
-          WNTR_professionVariantToSkillLevel[realmName][playerName][variantSkillLineId] = nil
+          WNTR_variantToSkillLevel[realmName][playerName][variantSkillLineId] = nil
         end
       end
     end
@@ -678,7 +678,7 @@ local function EventFrameFunction(self, event, ...)
     -- That's why we use our own recorded mapping.
     -- If variantSkillLineId is nil (recipe not yet in the mapping because no global sync has run yet),
     -- the entry below is a Lua no-op, but the profession is already pending a full sync which will cover this recipe.
-    local variantSkillLineId = WNTR_recipeIdToVariantSkillLineId[recipeId]
+    local variantSkillLineId = WNTR_recipeToVariant[recipeId]
     print("NEW_RECIPE_LEARNED", recipeId, variantSkillLineId, WNTR_variantToBaseProfession[variantSkillLineId])
   
     -- Sometimes (e.g. when learning a new profession) we learn several recipes at once.

@@ -27,7 +27,7 @@ WNTR_recipeToExperience = WNTR_recipeToExperience or {}
 
 -- Skill level per [realmName][playerName][variantSkillLineId] (plain number), and max level per [realmName][playerName]["maxLevels"][variantSkillLineId].
 -- We need to store max levels character-specifically because of profession specializations (e.g. Kul Tiran Herbalism vs. regular Herbalism).
-WNTR_professionVariantToSkillLevel = WNTR_professionVariantToSkillLevel or {}
+WNTR_variantToSkillLevel = WNTR_variantToSkillLevel or {}
 
 
 -- We store character classes to be able to display character names in class colours.
@@ -44,13 +44,13 @@ WNTR_professionSkillLineToIcon = WNTR_professionSkillLineToIcon or {}
 -- Populated by SyncVariantProfession().
 WNTR_variantToBaseProfession = WNTR_variantToBaseProfession or {}
 
--- WNTR_recipeIdToVariantSkillLineId[recipeId] = variantSkillLineId.
+-- WNTR_recipeToVariant[recipeId] = variantSkillLineId.
 -- GetProfessionInfoByRecipeID() is unreliable for some recipes and only works while,
 -- the profession is currently active in the backend. That's why we build our own
 -- authoritative mapping during SyncVariantProfession() while the backend is active
 -- and IsRecipeInSkillLine() is trustworthy. Entries are overwritten (not wiped) on
 -- global sync, so data from other characters is preserved.
-WNTR_recipeIdToVariantSkillLineId = WNTR_recipeIdToVariantSkillLineId or {}
+WNTR_recipeToVariant = WNTR_recipeToVariant or {}
 
 
 -- LibDBIcon minimap button position/state.

@@ -191,7 +191,7 @@ local function ShowSecondTooltip()
           local profVariantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
           local baseIdForIcon = profVariantInfo and profVariantInfo.parentProfessionID or variantId
           local profName = profVariantInfo.professionName
-          local charLevels = WNTR_professionVariantToSkillLevel[realm] and WNTR_professionVariantToSkillLevel[realm][character]
+          local charLevels = WNTR_variantToSkillLevel[realm] and WNTR_variantToSkillLevel[realm][character]
           local skillLevel = charLevels and charLevels[variantId]
           local maxLevel = charLevels and charLevels["maxLevels"] and charLevels["maxLevels"][variantId]
           if skillLevel and maxLevel and maxLevel > 0 then
