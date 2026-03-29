@@ -49,13 +49,11 @@ WNTR_professionSkillLineToIcon = WNTR_professionSkillLineToIcon or {}
 -- Populated by SyncVariantProfession().
 WNTR_variantToBaseProfession = WNTR_variantToBaseProfession or {}
 
--- WNTR_recipeToVariant[recipeId] = variantSkillLineId.
--- GetProfessionInfoByRecipeID() is unreliable for some recipes and only works while,
--- the profession is currently active in the backend. That's why we build our own
--- authoritative mapping during SyncVariantProfession() while the backend is active
+-- WNTR_variantToRecipes[variantSkillLineId] = "recipeId:recipeId:..." (colon-delimited string).
+-- Inverted mapping built during SyncVariantProfession() while the backend is active
 -- and IsRecipeInSkillLine() is trustworthy. Entries are overwritten (not wiped) on
 -- global sync, so data from other characters is preserved.
-WNTR_recipeToVariant = WNTR_recipeToVariant or {}
+WNTR_variantToRecipes = WNTR_variantToRecipes or {}
 
 
 -- LibDBIcon minimap button position/state.
