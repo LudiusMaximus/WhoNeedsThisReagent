@@ -3,7 +3,7 @@ local folderName, addon = ...
 
 -- ### Saved variables.
 
--- WNTR_reagentToRecipe[variantSkillLineId][reagentItemId] = { recipeId, ... }.
+-- WNTR_reagentToRecipe[variantSkillLineId][reagentItemId] = "recipeId:recipeId:..." (colon-delimited string).
 -- Also stores WNTR_reagentToRecipe["buildNumber"] to detect game client updates.
 WNTR_reagentToRecipe = WNTR_reagentToRecipe or {}
 
@@ -23,6 +23,11 @@ WNTR_recipeToRank = WNTR_recipeToRank or {}
 -- Only stored for the rank currently being worked on (i.e. the highest learned rank).
 -- WNTR_recipeToExperience["nextLevels"][recipeId] = nextLevelXP (shared across characters).
 WNTR_recipeToExperience = WNTR_recipeToExperience or {}
+
+-- WNTR_recipeWithUncollectedTransmog[recipeId] = true for recipes that produce an item
+-- whose transmog appearance has not yet been collected.
+-- Not character-specific: C_TransmogCollection is account-wide.
+WNTR_recipeWithUncollectedTransmog = WNTR_recipeWithUncollectedTransmog or {}
 
 
 -- Skill level per [realmName][playerName][variantSkillLineId] (plain number), and max level per [realmName][playerName]["maxLevels"][variantSkillLineId].
