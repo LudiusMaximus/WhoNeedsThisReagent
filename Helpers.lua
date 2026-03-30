@@ -12,6 +12,7 @@ local StopSound                                  = _G.StopSound
 local sort                                       = _G.sort
 local string_gmatch                              = _G.string.gmatch
 local tinsert                                    = _G.tinsert
+local wipe                                       = _G.wipe
 
 
 
@@ -71,17 +72,17 @@ function addon.AddReagentsForRecipe(recipeId, variantSkillLineId)
 end
 
 
-function addon.GetRecipesForReagent(variantId, reagentId)
-  local recipes = {}
+function addon.GetRecipesForReagent(variantId, reagentId, result)
+  if result then wipe(result) else result = {} end
   if WNTR_reagentToRecipe[variantId] then
     local str = WNTR_reagentToRecipe[variantId][reagentId]
     if str then
       for id in string_gmatch(str, "[^:]+") do
-        tinsert(recipes, tonumber(id))
+        tinsert(result, tonumber(id))
       end
     end
   end
-  return recipes
+  return result
 end
 
 
