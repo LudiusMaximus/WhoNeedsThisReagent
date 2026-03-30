@@ -16,10 +16,79 @@ local min                                           = _G.min
 local sort                                          = _G.sort
 local string_match                                  = _G.string.match
 local tinsert                                       = _G.tinsert
+local wipe                                          = _G.wipe
 
 -- Cache addon tables/functions.
 local GetRecipesForReagent = addon.GetRecipesForReagent
 
+
+-- API result caches: avoid re-creating large tables on every tooltip rebuild.
+-- These rarely change during a session (recipe names are constant, learned status
+-- only changes on NEW_RECIPE_LEARNED which triggers a full sync anyway).
+local recipeInfoCache = {}
+local profInfoCache = {}
+
+local function GetCachedRecipeInfo(recipeID)
+  local cached = recipeInfoCache[recipeID]
+  if cached then return cached end
+  cached = C_TradeSkillUI_GetRecipeInfo(recipeID)
+  if cached then recipeInfoCache[recipeID] = cached end
+  return cached
+end
+
+local function GetCachedProfInfo(variantId)
+  local cached = profInfoCache[variantId]
+  if cached then return cached end
+  cached = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
+  if cached then profInfoCache[variantId] = cached end
+  return cached
+end
+
+-- Reusable table for GetRecipesForReagent to avoid per-call allocations.
+local reusableRecipes = {}
+
+-- Line record pool: avoids allocating {text, kind, r, g, b} tables every rebuild.
+local linePool = {}
+local linePoolSize = 0
+local linePoolActive = 0
+
+local function AcquireLineRecord()
+  linePoolActive = linePoolActive + 1
+  if linePoolActive > linePoolSize then
+    linePoolSize = linePoolActive
+    linePool[linePoolSize] = {}
+  end
+  local rec = linePool[linePoolActive]
+  rec.text = nil
+  rec.kind = nil
+  rec.r = nil
+  rec.g = nil
+  rec.b = nil
+  rec.profSortKey = nil
+  return rec
+end
+
+local function ResetLinePool()
+  linePoolActive = 0
+end
+
+-- Module-level sort comparator (no closure allocation).
+local function sortByProfAndRecipe(a, b)
+  if a.profSortKey ~= b.profSortKey then return a.profSortKey < b.profSortKey end
+  if a.kind ~= b.kind then return a.kind == "profession" end
+  return a.text < b.text
+end
+
+-- Reusable intermediate tables (all wiped before each use to avoid stale data).
+local collectedLines = {}
+local characterLines = {}
+local columnStart = {}
+local columnEnd = {}
+local charBlockStart = {}
+local charBlockEnd = {}
+local lineToBlock = {}
+local splits = {}
+local colMaxWidths = {}
 
 
 -- ============================================================
@@ -131,23 +200,25 @@ local function ReleaseAllFontStrings()
   fontStringPoolActive = 0
 end
 
+-- Cache: skip rebuilding when nothing changed between frames.
+local lastTooltipLink = nil
+local lastTooltipModifier = false
+
 local function HideSecondTooltip()
   if tooltipFrame and tooltipFrame:IsShown() then
     ReleaseAllFontStrings()
     tooltipFrame:Hide()
   end
+  lastTooltipLink = nil
+  lastTooltipModifier = false
+  ResetLinePool()
 end
 
 local function ShowSecondTooltip()
 
-  -- Read GameTooltip's anchor point before any addon code can taint it.
-  -- GetPoint() returns a tainted string if called after we've touched GameTooltip,
-  -- causing "attempt to compare a secret string value" errors.
-  local gameTooltipAnchor = GameTooltip:GetPoint(1)
-
   -- Be fast in the standard case.
-  if not IsModifiedClick("COMPAREITEMS") or not GameTooltip:IsShown() then
-    -- Inlining HideSecondTooltip() condition for efficiency.
+  local modifierHeld = IsModifiedClick("COMPAREITEMS")
+  if not modifierHeld or not GameTooltip:IsShown() then
     if tooltipFrame and tooltipFrame:IsShown() then
       HideSecondTooltip()
     end
@@ -161,34 +232,43 @@ local function ShowSecondTooltip()
     return
   end
 
+  -- Skip rebuilding if item and modifier state haven't changed.
+  if link == lastTooltipLink and lastTooltipModifier then return end
+  lastTooltipLink = link
+  lastTooltipModifier = true
+
   local isCraftingReagent = select(17, C_Item_GetItemInfo(link))
   if not isCraftingReagent then
     HideSecondTooltip()
     return
   end
 
+  -- Read GameTooltip's anchor point before any addon code can taint it.
+  -- GetPoint() returns a tainted string if called after we've touched GameTooltip,
+  -- causing "attempt to compare a secret string value" errors.
+  local gameTooltipAnchor = GameTooltip:GetPoint(1)
+
   local reagentId = tonumber(string_match(link, "^.-:(%d+):"))
 
-  -- Collect lines to display.
-  local collectedLines = {}
+  -- Collect lines to display (zero table allocations — all records from pool).
+  wipe(collectedLines)
+  ResetLinePool()
   local hasLines = false
 
-  tinsert(collectedLines, { text = "Who needs this reagent?", kind = "title" })
+  local titleLine = AcquireLineRecord()
+  titleLine.text = "Who needs this reagent?"
+  titleLine.kind = "title"
+  tinsert(collectedLines, titleLine)
 
   for realm, characters in pairs(WNTR_recipeToDifficulty) do
     for character, difficultiesByVariant in pairs(characters) do
 
-      local characterLines = {}
-      local classColor = WNTR_characterToClass[realm] and WNTR_characterToClass[realm][character] and C_ClassColor_GetClassColor(WNTR_characterToClass[realm][character])
-      local charText = classColor and classColor:WrapTextInColorCode(character) or character
-      -- TODO: print realm in a different color.
-      tinsert(characterLines, { text = charText .. " (" .. realm .. ")", kind = "character" })
+      wipe(characterLines)
 
-      local professionBlocks = {}
       for variantId, difficultyByRecipe in pairs(difficultiesByVariant) do
-        local recipes = GetRecipesForReagent(variantId, reagentId)
+        local recipes = GetRecipesForReagent(variantId, reagentId, reusableRecipes)
         if #recipes > 0 then
-          local profVariantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantId)
+          local profVariantInfo = GetCachedProfInfo(variantId)
           local baseIdForIcon = profVariantInfo and profVariantInfo.parentProfessionID or variantId
           local profName = profVariantInfo.professionName
           local charLevels = WNTR_variantToSkillLevel[realm] and WNTR_variantToSkillLevel[realm][character]
@@ -199,9 +279,14 @@ local function ShowSecondTooltip()
           end
           local profText = "|T" .. WNTR_professionSkillLineToIcon[baseIdForIcon] .. ":14:14:0:0|t " .. profName
 
-          local recipeLines = {}
-          for _, recipeID in pairs(recipes) do
-            local recipeInfo = C_TradeSkillUI_GetRecipeInfo(recipeID)
+          local profLine = AcquireLineRecord()
+          profLine.text = profText
+          profLine.kind = "profession"
+          profLine.profSortKey = profName
+          tinsert(characterLines, profLine)
+
+          for _, recipeID in ipairs(recipes) do
+            local recipeInfo = GetCachedRecipeInfo(recipeID)
             local difficulty = difficultyByRecipe[recipeID]
             local textColor = IMPOSSIBLE_DIFFICULTY_COLOR
             if difficulty == 0 then
@@ -240,25 +325,32 @@ local function ShowSecondTooltip()
               end
             end
 
-            tinsert(recipeLines, { text = recipeName, r = textColor.r, g = textColor.g, b = textColor.b, kind = "recipe" })
+            local recipeLine = AcquireLineRecord()
+            recipeLine.text = recipeName
+            recipeLine.kind = "recipe"
+            recipeLine.r = textColor.r
+            recipeLine.g = textColor.g
+            recipeLine.b = textColor.b
+            recipeLine.profSortKey = profName
+            tinsert(characterLines, recipeLine)
           end
-          sort(recipeLines, function(a, b) return a.text < b.text end)
-
-          tinsert(professionBlocks, { sortKey = profName, profLine = { text = profText, kind = "profession" }, recipeLines = recipeLines })
-        end
-      end
-      sort(professionBlocks, function(a, b) return a.sortKey < b.sortKey end)
-      for _, block in ipairs(professionBlocks) do
-        tinsert(characterLines, block.profLine)
-        for _, recipeLine in ipairs(block.recipeLines) do
-          tinsert(characterLines, recipeLine)
         end
       end
 
       -- Only add character block if it has at least one recipe.
-      if #characterLines > 1 then
-        for _, line in ipairs(characterLines) do
-          tinsert(collectedLines, line)
+      if #characterLines > 0 then
+        sort(characterLines, sortByProfAndRecipe)
+
+        local classColor = WNTR_characterToClass[realm] and WNTR_characterToClass[realm][character] and C_ClassColor_GetClassColor(WNTR_characterToClass[realm][character])
+        local charText = classColor and classColor:WrapTextInColorCode(character) or character
+        -- TODO: print realm in a different color.
+        local charLine = AcquireLineRecord()
+        charLine.text = charText .. " (" .. realm .. ")"
+        charLine.kind = "character"
+        tinsert(collectedLines, charLine)
+
+        for i = 1, #characterLines do
+          tinsert(collectedLines, characterLines[i])
         end
         hasLines = true
       end
@@ -299,86 +391,92 @@ local function ShowSecondTooltip()
   local PROFESSION_POST_SPACING = 4  -- extra gap after profession headers (enlarged font)
 
   -- Compute column ranges, keeping character blocks together.
-  local columnRanges = {}
   do
-    local charBlocks = {}
-    local lineToBlock = {}
-    local currentBlock = nil
-    for i, line in ipairs(collectedLines) do
-      if line.kind == "character" then
-        currentBlock = { startIdx = i, endIdx = i }
-        tinsert(charBlocks, currentBlock)
-        lineToBlock[i] = #charBlocks
-      elseif currentBlock and (line.kind == "profession" or line.kind == "recipe") then
-        currentBlock.endIdx = i
-        lineToBlock[i] = #charBlocks
+    wipe(columnStart)
+    wipe(columnEnd)
+    wipe(charBlockStart)
+    wipe(charBlockEnd)
+    wipe(lineToBlock)
+    wipe(splits)
+    wipe(colMaxWidths)
+    local numCharBlocks = 0
+    local currentBlockIdx = 0
+    for i = 1, numLines do
+      local kind = collectedLines[i].kind
+      if kind == "character" then
+        numCharBlocks = numCharBlocks + 1
+        currentBlockIdx = numCharBlocks
+        charBlockStart[numCharBlocks] = i
+        charBlockEnd[numCharBlocks] = i
+        lineToBlock[i] = numCharBlocks
+      elseif currentBlockIdx > 0 and (kind == "profession" or kind == "recipe") then
+        charBlockEnd[currentBlockIdx] = i
+        lineToBlock[i] = currentBlockIdx
       end
     end
 
-    local splits = {}
-    for col = 1, numColumns - 1 do
+    local numSplits = numColumns - 1
+    for col = 1, numSplits do
       splits[col] = min(col * linesPerColumn, numLines)
     end
 
-    for s = 1, #splits do
+    for s = 1, numSplits do
       local splitIdx = splits[s]
       local blockIdx = lineToBlock[splitIdx]
       if blockIdx then
-        local block = charBlocks[blockIdx]
-        local blockSize = block.endIdx - block.startIdx + 1
+        local blockSize = charBlockEnd[blockIdx] - charBlockStart[blockIdx] + 1
         if blockSize > 6 then
           -- Large block: allow splitting within, but avoid tiny orphan groups.
-          local beforeCount = splitIdx - block.startIdx + 1
-          local afterCount = block.endIdx - splitIdx
-          if beforeCount < 3 and block.startIdx > 1 then
-            splits[s] = block.startIdx - 1
+          local beforeCount = splitIdx - charBlockStart[blockIdx] + 1
+          local afterCount = charBlockEnd[blockIdx] - splitIdx
+          if beforeCount < 3 and charBlockStart[blockIdx] > 1 then
+            splits[s] = charBlockStart[blockIdx] - 1
           elseif afterCount > 0 and afterCount < 3 then
-            splits[s] = block.endIdx
+            splits[s] = charBlockEnd[blockIdx]
           end
         else
           -- Small block: keep together by moving split before this block.
-          if splitIdx > block.startIdx and block.startIdx > 1 then
-            splits[s] = block.startIdx - 1
+          if splitIdx > charBlockStart[blockIdx] and charBlockStart[blockIdx] > 1 then
+            splits[s] = charBlockStart[blockIdx] - 1
           end
         end
       end
     end
 
-    for s = 1, #splits do
+    for s = 1, numSplits do
       if splits[s] < 1 then splits[s] = 1 end
       if splits[s] >= numLines then splits[s] = numLines - 1 end
       if s > 1 and splits[s] <= splits[s-1] then splits[s] = splits[s-1] + 1 end
     end
 
     local prevEnd = 0
-    for s = 1, #splits do
-      tinsert(columnRanges, { startIdx = prevEnd + 1, endIdx = splits[s] })
+    for s = 1, numSplits do
+      columnStart[s] = prevEnd + 1
+      columnEnd[s] = splits[s]
       prevEnd = splits[s]
     end
-    tinsert(columnRanges, { startIdx = prevEnd + 1, endIdx = numLines })
+    columnStart[numColumns] = prevEnd + 1
+    columnEnd[numColumns] = numLines
 
     -- If the tallest column still exceeds the screen fraction, revert to even distribution.
     local maxLinesInCol = 0
-    for _, r in ipairs(columnRanges) do
-      local count = r.endIdx - r.startIdx + 1
+    for col = 1, numColumns do
+      local count = columnEnd[col] - columnStart[col] + 1
       if count > maxLinesInCol then maxLinesInCol = count end
     end
     if maxLinesInCol * tooltipLineHeight > fallbackScreenFraction * UIParent:GetHeight() then
-      columnRanges = {}
       for col = 1, numColumns do
-        local s = (col - 1) * linesPerColumn + 1
-        local e = min(col * linesPerColumn, numLines)
-        tinsert(columnRanges, { startIdx = s, endIdx = e })
+        columnStart[col] = (col - 1) * linesPerColumn + 1
+        columnEnd[col] = min(col * linesPerColumn, numLines)
       end
     end
   end
 
   -- Phase 1: Create font strings, set text, measure widths.
-  local columns = {}
+  -- Font strings are acquired sequentially (1..numLines), matching collectedLines indices.
   for col = 1, numColumns do
-    columns[col] = { entries = {}, maxWidth = 0 }
-
-    for idx = columnRanges[col].startIdx, columnRanges[col].endIdx do
+    colMaxWidths[col] = 0
+    for idx = columnStart[col], columnEnd[col] do
       local lineData = collectedLines[idx]
       local fs = AcquireFontString()
 
@@ -402,9 +500,7 @@ local function ShowSecondTooltip()
 
       local indent = lineData.kind == "recipe" and RECIPE_INDENT or 0
       local w = fs:GetUnboundedStringWidth() + indent
-      if w > columns[col].maxWidth then columns[col].maxWidth = w end
-
-      tinsert(columns[col].entries, { fs = fs, kind = lineData.kind })
+      if w > colMaxWidths[col] then colMaxWidths[col] = w end
     end
   end
 
@@ -415,7 +511,7 @@ local function ShowSecondTooltip()
 
   local globalMaxWidth = 0
   for col = 1, numColumns do
-    if columns[col].maxWidth > globalMaxWidth then globalMaxWidth = columns[col].maxWidth end
+    if colMaxWidths[col] > globalMaxWidth then globalMaxWidth = colMaxWidths[col] end
   end
   local colWidth = globalMaxWidth
   local totalWidth = PADDING_H * 2 + colWidth * numColumns + COLUMN_GAP * (numColumns - 1)
@@ -423,27 +519,29 @@ local function ShowSecondTooltip()
   local maxColHeight = 0
   for col = 1, numColumns do
     local h = 0
-    for _, entry in ipairs(columns[col].entries) do
-      if entry.kind == "character" then h = h + CHARACTER_PRE_SPACING end
+    for idx = columnStart[col], columnEnd[col] do
+      local kind = collectedLines[idx].kind
+      if kind == "character" then h = h + CHARACTER_PRE_SPACING end
       h = h + tooltipLineHeight + LINE_SPACING
-      if entry.kind == "character" then h = h + CHARACTER_POST_SPACING end
-      if entry.kind == "profession" then h = h + PROFESSION_POST_SPACING end
+      if kind == "character" then h = h + CHARACTER_POST_SPACING end
+      if kind == "profession" then h = h + PROFESSION_POST_SPACING end
     end
     if h > maxColHeight then maxColHeight = h end
   end
   local totalHeight = PADDING_V + maxColHeight
 
-  -- Phase 3: Position all font strings.
+  -- Phase 3: Position all font strings (fontStringPool[idx] maps to collectedLines[idx]).
   local x = PADDING_H
   for col = 1, numColumns do
     local yOffset = -(PADDING_V / 2)
-    for _, entry in ipairs(columns[col].entries) do
-      local indent = entry.kind == "recipe" and RECIPE_INDENT or 0
-      if entry.kind == "character" then yOffset = yOffset - CHARACTER_PRE_SPACING end
-      entry.fs:SetPoint("TOPLEFT", tooltipFrame, "TOPLEFT", x + indent, yOffset)
+    for idx = columnStart[col], columnEnd[col] do
+      local kind = collectedLines[idx].kind
+      local indent = kind == "recipe" and RECIPE_INDENT or 0
+      if kind == "character" then yOffset = yOffset - CHARACTER_PRE_SPACING end
+      fontStringPool[idx]:SetPoint("TOPLEFT", tooltipFrame, "TOPLEFT", x + indent, yOffset)
       yOffset = yOffset - (tooltipLineHeight + LINE_SPACING)
-      if entry.kind == "character" then yOffset = yOffset - CHARACTER_POST_SPACING end
-      if entry.kind == "profession" then yOffset = yOffset - PROFESSION_POST_SPACING end
+      if kind == "character" then yOffset = yOffset - CHARACTER_POST_SPACING end
+      if kind == "profession" then yOffset = yOffset - PROFESSION_POST_SPACING end
     end
     x = x + colWidth + COLUMN_GAP
   end
