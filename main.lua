@@ -85,17 +85,18 @@ WNTR_pendingCharacterSync = WNTR_pendingCharacterSync or {}
 --   In this code: "baseId" / "baseProfessionId" = base, "variantId" = expansion variant.
 --
 -- Data flow:
---   SKILL_LINES_CHANGED fires on login and profession changes.
---     -> UpdateProfessions() detects what needs syncing by checking the persistent pending
---        tables and comparing stored vs. current skill levels.
---     -> For each base profession needing sync: if the profession backend is active,
---        SyncBaseProfession() runs immediately; otherwise the base ID is queued into
---        pendingBaseSkillLineIds (a runtime-only list) so the user can trigger sync manually.
+--   PLAYER_LOGIN fires once on login.
+--     -> UpdateProfessions() picks up any pending syncs from a previous session (persisted
+--        in WNTR_pendingCharacterSync) and cleans up data for dropped professions.
+--   CONSOLE_MESSAGE and NEW_RECIPE_LEARNED share a debounced handler
+--   (ProcessPendingChanges). A craft can trigger both a skill-up and a new recipe
+--   almost simultaneously; the 0.5s timer batches them into one SyncOrAddPending
+--   call per affected base profession (syncs immediately if the backend is active,
+--   otherwise queues as pending). CONSOLE_MESSAGE also catches newly learned
+--   variants (from 0 to 1), even when LEARNED_SPELL_IN_SKILL_LINE does not fire.
 --   TRADE_SKILL_LIST_UPDATE fires when a profession window opens.
 --     -> SyncBaseProfession() rebuilds global data (reagents, ranks) if pendingGlobalSync
 --        says so, and always rebuilds character-specific data (difficulty, skill levels).
---   NEW_RECIPE_LEARNED fires when the player learns a new recipe.
---     -> ProcessNewRecipes() attempts a quick difficulty update or queues for later sync.
 --
 -- Pending sync (two tiers, both persisted as saved variables):
 --   WNTR_pendingGlobalSync[variantSkillLineId] = true
