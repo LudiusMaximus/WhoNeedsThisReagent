@@ -322,8 +322,9 @@ local function ShowSecondTooltip()
 
             -- When a profession is maxed out, the API may still report learned recipes with
             -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).
-            -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet.
-            if recipeInfo.learned and skillLevel and maxLevel and maxLevel > 0 and skillLevel >= maxLevel then
+            -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet,
+            -- or the corrected difficulty (nil) indicates it is not learned yet.
+            if recipeInfo.learned and skillLevel and maxLevel and maxLevel > 0 and skillLevel >= maxLevel and difficulty ~= nil then
               local rankNotMaxed = rank and WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
               if not rankNotMaxed then
                 textColor = TRIVIAL_DIFFICULTY_COLOR

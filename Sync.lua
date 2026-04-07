@@ -142,6 +142,8 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
   -- sync the profession variants they have learned.
 
   -- Collecting { [recipeId] = recipeInfo } for post-processing (AssignRanksByName, CorrectShadowlandsRankedRecipeDifficulty, UpdateRecipeExperience).
+  -- TODO: Somewhat redundant to store recipeId and recipeInfo, as recipeInfo also includes recipeID field.
+  --       Particularly below, it is redundant to pass both recipeId and recipeInfo to post-processing functions.
   local variantRecipeInfos = {}
 
   for _, recipeId in pairs(recipeIds) do
