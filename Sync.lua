@@ -122,16 +122,16 @@ end
 
 -- Backend readiness must be verified by the caller (SyncBaseProfession) before calling this.
 local function SyncVariantProfession(variantSkillLineId, recipeIds)
-  
+
   local realmName  = GetRealmName()
   local playerName = UnitName("player")
-  
+
 
   -- Global sync needed if explicitly pending or data is missing.
   local needsGlobalSync = WNTR_pendingGlobalSync[variantSkillLineId]
       or not WNTR_reagentToRecipe[variantSkillLineId]
       or not next(WNTR_reagentToRecipe[variantSkillLineId])
-  
+
   -- Clear old data to be refilled.
   -- Character specific data is always updated.
   WNTR_recipeToDifficulty[realmName] = WNTR_recipeToDifficulty[realmName] or {}
@@ -145,18 +145,17 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
   local variantRecipeInfos = {}
 
   for _, recipeId in pairs(recipeIds) do
-  
+
     -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.IsRecipeInSkillLine
     if C_TradeSkillUI_IsRecipeInSkillLine(recipeId, variantSkillLineId) then
-    
+
       local recipeInfo = C_TradeSkillUI_GetRecipeInfo(recipeId)
-      
+
       if recipeInfo then
-      
+
         -- Collect for post-processing.
         variantRecipeInfos[recipeId] = recipeInfo
-        
-        
+
         if needsGlobalSync then
 
           AddReagentsForRecipe(recipeId, variantSkillLineId)
@@ -179,7 +178,7 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
           end
 
         end
-        
+
         if recipeInfo.learned then
           WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId] = WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId] or {}
           WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId][recipeId] = recipeInfo.relativeDifficulty
@@ -191,13 +190,12 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
         if pendingNewRecipes[recipeId] then
           pendingNewRecipes[recipeId] = nil
         end
-      
+
       end -- if recipeInfo
     end -- if C_TradeSkillUI_IsRecipeInSkillLine(recipeId, variantSkillLineId
   end -- for _, recipeId in pairs(recipeIds)
 
 
-  
   if needsGlobalSync then
     -- Assign ranks by name grouping for Shadowlands ranked recipes that lack the previousRecipeID/nextRecipeID logic.
     AssignRanksByName(variantRecipeInfos)
@@ -231,7 +229,7 @@ local function SyncVariantProfession(variantSkillLineId, recipeIds)
   if WNTR_pendingCharacterSync[realmName] and WNTR_pendingCharacterSync[realmName][playerName] then
     WNTR_pendingCharacterSync[realmName][playerName][variantSkillLineId] = nil
   end
-  
+
 end
 
 
@@ -248,6 +246,7 @@ local function SyncBaseProfession(baseSkillLineId)
     return false
   end
   if C_TradeSkillUI_GetProfessionChildSkillLineID() == 0 then
+    -- print("WNTR DEBUG: Backend does not seem to be initialized.")
     return false
   end
 
@@ -262,7 +261,7 @@ local function SyncBaseProfession(baseSkillLineId)
   for _, childInfo in ipairs(childInfos) do
     SyncVariantProfession(childInfo.professionID, recipeIds)
   end
- 
+
   return true
 end
 
@@ -345,12 +344,12 @@ end
 -- Better name would be "SyncNextPendingBaseProfession", but we want to keep the name
 -- short for the chat input.
 function SyncPendingProfession(notFromChat)
-  
+
   -- Set global flag to indicate that we have to refill the chat input text.
   -- "Not not" from chat, may seem cumbersome but is intentional to keep
   -- the chat input command simple without any arguments.
   syncFromChat = not notFromChat
-  
+
   if #pendingBaseSkillLineIds == 0 then
     if WNTR_config.showStatusMessages then
       print("|cff00ccffWhoNeedsThisReagent:|r All professions are already synced.")
@@ -358,16 +357,16 @@ function SyncPendingProfession(notFromChat)
     return
   end
   local baseSkillLineId = pendingBaseSkillLineIds[1]
-  
+
   -- Check if the character actually has this profession.
   if not CharacterHasBaseProfession(baseSkillLineId) then return end
-  
-  
+
+
   if WNTR_config.showStatusMessages then
     print("|cff00ccffWhoNeedsThisReagent:|r Starting synchronization of", C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, "...")
   end
-  
-  
+
+
   -- Always open the profession via OpenTradeSkill() to get a live backend.
   -- GetAllRecipeIDs() only reflects the last-opened frame state and is not reliable here.
   -- print("WNTR DEBUG: Opening profession", baseSkillLineId, "silently...")
@@ -375,7 +374,7 @@ function SyncPendingProfession(notFromChat)
   silentOpenFrameWasShown = ProfessionsFrame and ProfessionsFrame:IsShown() or false
   C_TradeSkillUI_OpenTradeSkill(baseSkillLineId)
   StopLastSound()
-  
+
   -- The rest happens in OnEvent when TRADE_SKILL_LIST_UPDATE fires.
 end
 
@@ -553,8 +552,8 @@ local function EventFrameFunction(self, event, ...)
       end
       WNTR_reagentToRecipe["buildNumber"] = currentBuildNumber
     end
-    
-    
+
+
     -- Apply config defaults: remove obsolete keys, fill in missing ones.
     for k in pairs(WNTR_config) do
       if CONFIG_DEFAULTS[k] == nil then WNTR_config[k] = nil end
@@ -601,7 +600,7 @@ local function EventFrameFunction(self, event, ...)
       local activeProfessionInfo = C_TradeSkillUI_GetBaseProfessionInfo()
       if activeProfessionInfo and activeProfessionInfo.professionID == silentOpenProfessionId then
         -- print("WNTR DEBUG: ...silent open succeeded for profession", silentOpenProfessionId)
-        
+
         -- When OpenTradeSkill() is run for the first time after client restart,
         -- GetBaseProfessionInfo() may already return our requested professionID while
         -- GetProfessionChildSkillLineID() still returns 0 (backend not fully loaded).
@@ -614,11 +613,13 @@ local function EventFrameFunction(self, event, ...)
         -- Keep the invisible frame open and retry every 0.2s for up to 2 seconds,
         -- giving the backend time to finish loading the profession variant data.
         elseif not silentOpenRetryTicker then
-        
+
           silentOpenRetryCount = 0
           silentOpenRetryTicker = C_Timer_NewTicker(0.2, function()
             silentOpenRetryCount = silentOpenRetryCount + 1
-            
+
+            -- print("WNTR DEBUG: Retrying sync of", silentOpenProfessionId)
+
             local retrySuccess = SyncBaseProfession(silentOpenProfessionId)
 
             if retrySuccess or silentOpenRetryCount >= 10 then
@@ -631,11 +632,11 @@ local function EventFrameFunction(self, event, ...)
               end
               FinishSilentOpen()
             end
-            
+
           end)
         end
-        
-        
+
+
       else
         -- Profession mismatch. Should never happen.
         -- print("WNTR DEBUG: ...silent open failed because of profession mismatch. Expected:", silentOpenProfessionId, "Got:", activeProfessionInfo and activeProfessionInfo.professionID or "nil")
@@ -752,7 +753,7 @@ local function EventFrameFunction(self, event, ...)
       end
     end
     -- print("NEW_RECIPE_LEARNED", recipeId, variantSkillLineId)
-  
+
     -- If variantSkillLineId is nil (recipe not yet in the mapping because no global sync has run yet),
     -- the entry below is a Lua no-op, but the profession is already pending a full sync which will cover this recipe.
     pendingNewRecipes[recipeId] = variantSkillLineId
