@@ -155,6 +155,7 @@ function addon.CorrectShadowlandsRankedRecipeDifficulty(realmName, playerName, r
   if not rank then return end
   local unlockedLevel = recipeInfo.unlockedRecipeLevel
   if not unlockedLevel or unlockedLevel == 0 then return end
+  -- print(recipeInfo.name, recipeId, recipeInfo.recipeID, rank, unlockedLevel)
 
   local charRecipes = WNTR_recipeToDifficulty[realmName]
       and WNTR_recipeToDifficulty[realmName][playerName]
