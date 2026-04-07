@@ -1,7 +1,7 @@
 local _, addon = ...
 
 -- Cache of global WoW API tables/functions.
-local C_TooltipInfo_GetRecipeResultItem          = _G.C_TooltipInfo.GetRecipeResultItem
+local C_TooltipInfo_GetItemByID                  = _G.C_TooltipInfo.GetItemByID
 local C_TradeSkillUI_GetRecipeInfo               = _G.C_TradeSkillUI.GetRecipeInfo
 local C_TradeSkillUI_GetRecipeSchematic          = _G.C_TradeSkillUI.GetRecipeSchematic
 local GetProfessionInfo                          = _G.GetProfessionInfo
@@ -200,18 +200,25 @@ end
 -- Check whether a recipe produces an item whose transmog appearance has not yet been collected.
 -- C_TransmogCollection.PlayerHasTransmog(itemId) appears to be broken (always returns false),
 -- so we inspect the recipe result tooltip for TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN instead.
+-- Uses schematic.outputItemID instead of the broken C_TooltipInfo.GetRecipeResultItem() API,
+-- which returns wrong results for Shadowlands recipes.
 function addon.UpdateUncollectedTransmog(recipeId)
-  local tooltipInfo = C_TooltipInfo_GetRecipeResultItem(recipeId)
-  if not tooltipInfo or not tooltipInfo.lines then
+  local schematic = C_TradeSkillUI_GetRecipeSchematic(recipeId, false)
+  if not schematic or not schematic.outputItemID then
     WNTR_recipeWithUncollectedTransmog[recipeId] = nil
     return
   end
-  -- Search from bottom to top, because the appearance line is typically near the end.
-  for i = #tooltipInfo.lines, 3, -1 do
-    if tooltipInfo.lines[i].leftText == TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN then
-      WNTR_recipeWithUncollectedTransmog[recipeId] = true
-      return
+
+  local tooltipInfo = C_TooltipInfo_GetItemByID(schematic.outputItemID)
+  if tooltipInfo and tooltipInfo.lines then
+    -- Search from bottom to top, because the appearance line is typically near the end.
+    for i = #tooltipInfo.lines, 3, -1 do
+      if tooltipInfo.lines[i].leftText == TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN then
+        WNTR_recipeWithUncollectedTransmog[recipeId] = true
+        return
+      end
     end
   end
+
   WNTR_recipeWithUncollectedTransmog[recipeId] = nil
 end
