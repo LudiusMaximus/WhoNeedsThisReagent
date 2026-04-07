@@ -2,7 +2,6 @@ local folderName, addon = ...
 
 -- Cache of global WoW API tables/functions.
 local C_ClassColor_GetClassColor                    = _G.C_ClassColor.GetClassColor
-local C_Item_GetItemInfo                            = _G.C_Item.GetItemInfo
 local C_TradeSkillUI_GetProfessionInfoBySkillLineID = _G.C_TradeSkillUI.GetProfessionInfoBySkillLineID
 local C_TradeSkillUI_GetRecipeInfo                  = _G.C_TradeSkillUI.GetRecipeInfo
 local GameTooltip                                   = _G.GameTooltip
@@ -28,11 +27,11 @@ local GetRecipesForReagent = addon.GetRecipesForReagent
 local recipeInfoCache = {}
 local profInfoCache = {}
 
-local function GetCachedRecipeInfo(recipeID)
-  local cached = recipeInfoCache[recipeID]
+local function GetCachedRecipeInfo(recipeId)
+  local cached = recipeInfoCache[recipeId]
   if cached then return cached end
-  cached = C_TradeSkillUI_GetRecipeInfo(recipeID)
-  if cached then recipeInfoCache[recipeID] = cached end
+  cached = C_TradeSkillUI_GetRecipeInfo(recipeId)
+  if cached then recipeInfoCache[recipeId] = cached end
   return cached
 end
 
@@ -237,18 +236,27 @@ local function ShowSecondTooltip()
   lastTooltipLink = link
   lastTooltipModifier = true
 
-  local isCraftingReagent = select(17, C_Item_GetItemInfo(link))
-  if not isCraftingReagent then
-    HideSecondTooltip()
-    return
-  end
-
   -- Read GameTooltip's anchor point before any addon code can taint it.
   -- GetPoint() returns a tainted string if called after we've touched GameTooltip,
   -- causing "attempt to compare a secret string value" errors.
   local gameTooltipAnchor = GameTooltip:GetPoint(1)
 
   local reagentId = tonumber(string_match(link, "^.-:(%d+):"))
+
+  -- Quick check: does any synced profession variant use this item as a reagent?
+  -- This avoids all the pool allocations, API calls, and nested iteration below
+  -- for the vast majority of items that aren't crafting ingredients.
+  local isKnownReagent = false
+  for variantId, reagents in pairs(WNTR_reagentToRecipe) do
+    if reagents[reagentId] then
+      isKnownReagent = true
+      break
+    end
+  end
+  if not isKnownReagent then
+    HideSecondTooltip()
+    return
+  end
 
   -- Collect lines to display (zero table allocations — all records from pool).
   wipe(collectedLines)
@@ -285,9 +293,9 @@ local function ShowSecondTooltip()
           profLine.profSortKey = profName
           tinsert(characterLines, profLine)
 
-          for _, recipeID in ipairs(recipes) do
-            local recipeInfo = GetCachedRecipeInfo(recipeID)
-            local difficulty = difficultyByRecipe[recipeID]
+          for _, recipeId in ipairs(recipes) do
+            local recipeInfo = GetCachedRecipeInfo(recipeId)
+            local difficulty = difficultyByRecipe[recipeId]
             local textColor = IMPOSSIBLE_DIFFICULTY_COLOR
             if difficulty == 0 then
               textColor = DIFFICULT_DIFFICULTY_COLOR
@@ -299,19 +307,19 @@ local function ShowSecondTooltip()
               textColor = TRIVIAL_DIFFICULTY_COLOR
             end
             local recipeName = recipeInfo.name
-            local rank = WNTR_recipeToRank[recipeID]
+            local rank = WNTR_recipeToRank[recipeId]
             if rank then
-              local currentXP = WNTR_recipeToExperience[realm] and WNTR_recipeToExperience[realm][character] and WNTR_recipeToExperience[realm][character][recipeID]
-              local nextXP = WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeID]
+              local currentXP = WNTR_recipeToExperience[realm] and WNTR_recipeToExperience[realm][character] and WNTR_recipeToExperience[realm][character][recipeId]
+              local nextXP = WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
               if currentXP and nextXP then
                 recipeName = recipeName .. " (Rank " .. rank .. ", " .. currentXP .. "/" .. nextXP .. ")"
               else
                 recipeName = recipeName .. " (Rank " .. rank .. ")"
               end
             end
-            -- recipeName = recipeName .. " [" .. recipeID .. "]"  -- DEBUG: recipeID display
+            -- recipeName = recipeName .. " [" .. recipeId .. "]"  -- DEBUG: recipeId display
 
-            if WNTR_config.showUncollectedTransmog and WNTR_recipeWithUncollectedTransmog[recipeID] then
+            if WNTR_config.showUncollectedTransmog and WNTR_recipeWithUncollectedTransmog[recipeId] then
               recipeName = recipeName .. " |A:Crosshair_Transmogrify_32:15:15|a"
             end
 
@@ -319,7 +327,7 @@ local function ShowSecondTooltip()
             -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).
             -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet.
             if recipeInfo.learned and skillLevel and maxLevel and maxLevel > 0 and skillLevel >= maxLevel then
-              local rankNotMaxed = rank and WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeID]
+              local rankNotMaxed = rank and WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
               if not rankNotMaxed then
                 textColor = TRIVIAL_DIFFICULTY_COLOR
               end
