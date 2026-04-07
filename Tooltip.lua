@@ -64,6 +64,7 @@ local function AcquireLineRecord()
   rec.g = nil
   rec.b = nil
   rec.profSortKey = nil
+  rec.transmog = nil
   return rec
 end
 
@@ -319,10 +320,6 @@ local function ShowSecondTooltip()
             end
             -- recipeName = recipeName .. " [" .. recipeId .. "]"  -- DEBUG: recipeId display
 
-            if WNTR_config.showUncollectedTransmog and WNTR_recipeWithUncollectedTransmog[recipeId] then
-              recipeName = recipeName .. " |A:Crosshair_Transmogrify_32:15:15|a"
-            end
-
             -- When a profession is maxed out, the API may still report learned recipes with
             -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).
             -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet.
@@ -340,6 +337,9 @@ local function ShowSecondTooltip()
             recipeLine.g = textColor.g
             recipeLine.b = textColor.b
             recipeLine.profSortKey = profName
+            if WNTR_config.showUncollectedTransmog and WNTR_recipeWithUncollectedTransmog[recipeId] then
+              recipeLine.transmog = true
+            end
             tinsert(characterLines, recipeLine)
           end
         end
@@ -547,6 +547,13 @@ local function ShowSecondTooltip()
       local indent = kind == "recipe" and RECIPE_INDENT or 0
       if kind == "character" then yOffset = yOffset - CHARACTER_PRE_SPACING end
       fontStringPool[idx]:SetPoint("TOPLEFT", tooltipFrame, "TOPLEFT", x + indent, yOffset)
+      -- Uncollected transmog indicator: place icon in the indent space to the left of the recipe name.
+      if collectedLines[idx].transmog then
+        local iconFs = AcquireFontString()
+        iconFs:SetFontObject(GameTooltipText)
+        iconFs:SetText("|A:Crosshair_Transmogrify_32:15:15|a")
+        iconFs:SetPoint("TOPLEFT", tooltipFrame, "TOPLEFT", x+2, yOffset+2)
+      end
       yOffset = yOffset - (tooltipLineHeight + LINE_SPACING)
       if kind == "character" then yOffset = yOffset - CHARACTER_POST_SPACING end
       if kind == "profession" then yOffset = yOffset - PROFESSION_POST_SPACING end
