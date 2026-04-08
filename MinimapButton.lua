@@ -1,5 +1,13 @@
 local folderName, addon = ...
 
+-- Locals for frequently used global frames and functions.
+local GameTooltip_AddBlankLineToTooltip  = _G.GameTooltip_AddBlankLineToTooltip
+local GameTooltip_AddErrorLine           = _G.GameTooltip_AddErrorLine
+local GameTooltip_AddInstructionLine     = _G.GameTooltip_AddInstructionLine
+local GameTooltip_AddNormalLine          = _G.GameTooltip_AddNormalLine
+local GameTooltip_SetTitle               = _G.GameTooltip_SetTitle
+
+
 -- Cache of global WoW API tables/functions.
 local C_TradeSkillUI_GetProfessionInfoBySkillLineID = _G.C_TradeSkillUI.GetProfessionInfoBySkillLineID
 
@@ -7,6 +15,45 @@ local tinsert                                       = _G.tinsert
 
 -- Cache addon tables/functions.
 local pendingBaseSkillLineIds = addon.pendingBaseSkillLineIds
+
+
+-- Custom tooltip for settings menu entries.
+local settingsTooltip = CreateFrame("GameTooltip", folderName .. "_SettingsTooltip", UIParent, "GameTooltipTemplate")
+settingsTooltip:SetFrameStrata("TOOLTIP")
+settingsTooltip:Hide()
+
+local settingsTooltipHideTimer = nil
+
+local function ShowSettingsTooltip(anchorFrame, title, text)
+  if settingsTooltipHideTimer then
+    settingsTooltipHideTimer:Cancel()
+    settingsTooltipHideTimer = nil
+  end
+  local anchor = (anchorFrame:GetRight() or 0) > UIParent:GetWidth() / 2 and "ANCHOR_LEFT" or "ANCHOR_RIGHT"
+  settingsTooltip:SetOwner(anchorFrame, anchor)
+  settingsTooltip:ClearLines()
+  GameTooltip_SetTitle(settingsTooltip, title)
+  GameTooltip_AddNormalLine(settingsTooltip, text)
+  settingsTooltip:Show()
+end
+
+local function HideSettingsTooltipDelayed()
+  if settingsTooltipHideTimer then
+    settingsTooltipHideTimer:Cancel()
+  end
+  settingsTooltipHideTimer = C_Timer.NewTimer(0.33, function()
+    settingsTooltip:Hide()
+    settingsTooltipHideTimer = nil
+  end)
+end
+
+local function HideSettingsTooltipImmediately()
+  if settingsTooltipHideTimer then
+    settingsTooltipHideTimer:Cancel()
+    settingsTooltipHideTimer = nil
+  end
+  settingsTooltip:Hide()
+end
 
 
 -- Minimap icon via LibDataBroker + LibDBIcon.
@@ -23,18 +70,25 @@ do
       iconCoords = atlasInfo and {atlasInfo.leftTexCoord, atlasInfo.rightTexCoord, atlasInfo.topTexCoord, atlasInfo.bottomTexCoord} or nil,
     })
 
-    function plugin.OnTooltipShow(tt)
-      tt:AddLine("Who Needs This Reagent?")
+    function plugin.OnTooltipShow(tooltip)
+      GameTooltip_SetTitle(tooltip, "Who Needs This Reagent?")
+      GameTooltip_AddNormalLine(tooltip, "Shows in a reagent's tooltip which of your characters can use it for crafting.", true)
+      GameTooltip_AddBlankLineToTooltip(tooltip)
+      GameTooltip_AddNormalLine(tooltip, "When this minimap icon is glowing, a sync of profession data is required; e.g. after you learn a new recipe or skill up. We cannot sync automatically but you can trigger a sync by clicking this minimap button or using the console command of the addon's console message.", true)
       if #pendingBaseSkillLineIds > 0 then
-        tt:AddLine("The following professions need synchronization:", 1, 0.5, 0)
+        GameTooltip_AddBlankLineToTooltip(tooltip)
+        GameTooltip_AddErrorLine(tooltip, "The following professions need a sync:")
         for _, baseSkillLineId in ipairs(pendingBaseSkillLineIds) do
-          tt:AddLine("  - " .. C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, 1, 0.5, 0)
+          GameTooltip_AddErrorLine(tooltip, "  - " .. C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName)
         end
-        tt:AddLine(" ")
-        tt:AddLine("Click to sync pending professions.", 0.2, 1, 0.2)
+        GameTooltip_AddBlankLineToTooltip(tooltip)
+        GameTooltip_AddInstructionLine(tooltip, "Left-click to sync pending professions.")
       else
-        tt:AddLine("All professions synced.", 0, 1, 0)
+        GameTooltip_AddBlankLineToTooltip(tooltip)
+        GameTooltip_AddNormalLine(tooltip, "Currently all professions are synced!")
       end
+      GameTooltip_AddBlankLineToTooltip(tooltip)
+      GameTooltip_AddInstructionLine(tooltip, "Right-click for options.")
     end
 
     function plugin.OnClick(self, button)
@@ -45,21 +99,68 @@ do
       elseif button == "RightButton" then
         MenuUtil.CreateContextMenu(UIParent, function(_, menu)
           menu:CreateTitle("Who Needs This Reagent?")
-          menu:CreateCheckbox(
-            "Show pending sync messages",
+
+          local cb, submenu
+
+          submenu = menu:CreateButton("Console messages")
+          submenu:SetOnEnter(function(frame, desc)
+            HideSettingsTooltipImmediately()
+            desc:ForceOpenSubmenu()
+            ShowSettingsTooltip(frame, "Console messages", "Settings for chat messages related to profession synchronization.")
+          end)
+          submenu:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+
+          submenu:CreateTitle("Console messages")
+
+          cb = submenu:CreateCheckbox(
+            "Pending sync messages",
             function() return WNTR_config.showPendingSyncMessages end,
             function() WNTR_config.showPendingSyncMessages = not WNTR_config.showPendingSyncMessages end
           )
-          menu:CreateCheckbox(
-            "Show status messages",
+          cb:SetOnEnter(function(frame)
+            ShowSettingsTooltip(frame, "Pending sync messages", "Show a chat message listing professions that need synchronization, with a clickable link to start the sync.")
+          end)
+          cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+
+          cb = submenu:CreateCheckbox(
+            "Status messages",
             function() return WNTR_config.showStatusMessages end,
             function() WNTR_config.showStatusMessages = not WNTR_config.showStatusMessages end
           )
-          menu:CreateCheckbox(
-            "Show uncollected transmog icon",
+          cb:SetOnEnter(function(frame)
+            ShowSettingsTooltip(frame, "Status messages", "Show chat messages when a manually triggered background profession sync starts and completes.")
+          end)
+          cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+
+          submenu = menu:CreateButton("Tooltip")
+          submenu:SetOnEnter(function(frame, desc)
+            HideSettingsTooltipImmediately()
+            desc:ForceOpenSubmenu()
+            ShowSettingsTooltip(frame, "Tooltip", "Settings that affect the reagent tooltip display.")
+          end)
+          submenu:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+
+          submenu:CreateTitle("Tooltip")
+
+          cb = submenu:CreateCheckbox(
+            "Next unlearned rank only",
+            function() return WNTR_config.nextUnlearnedRankOnly end,
+            function() WNTR_config.nextUnlearnedRankOnly = not WNTR_config.nextUnlearnedRankOnly end
+          )
+          cb:SetOnEnter(function(frame)
+            ShowSettingsTooltip(frame, "Next unlearned rank only", "If a recipe has several ranks, only show the next rank you have not yet learned. E.g. if a recipe has 4 ranks and you know rank 2, only rank 3 is shown as unlearned while the also unlearned rank 4 is disregarded.")
+          end)
+          cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+
+          cb = submenu:CreateCheckbox(
+            "Uncollected transmog icon",
             function() return WNTR_config.showUncollectedTransmog end,
             function() WNTR_config.showUncollectedTransmog = not WNTR_config.showUncollectedTransmog end
           )
+          cb:SetOnEnter(function(frame)
+            ShowSettingsTooltip(frame, "Uncollected transmog icon", "Display a transmogrification icon next to recipes whose crafted item has an appearance you haven't collected yet. Semi-transparent if the appearance is known from a different item.")
+          end)
+          cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
         end)
       end
     end

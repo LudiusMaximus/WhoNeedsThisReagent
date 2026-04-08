@@ -298,55 +298,116 @@ local function ShowSecondTooltip()
           for _, recipeId in ipairs(recipes) do
             local recipeInfo = GetCachedRecipeInfo(recipeId)
             local difficulty = difficultyByRecipe[recipeId]
-            local textColor = IMPOSSIBLE_DIFFICULTY_COLOR
-            if difficulty == 0 then
-              textColor = DIFFICULT_DIFFICULTY_COLOR
-            elseif difficulty == 1 then
-              textColor = FAIR_DIFFICULTY_COLOR
-            elseif difficulty == 2 then
-              textColor = EASY_DIFFICULTY_COLOR
-            elseif difficulty == 3 then
-              textColor = TRIVIAL_DIFFICULTY_COLOR
-            end
-            local recipeName = recipeInfo.name
-            local rank = WNTR_recipeToRank[recipeId]
-            if rank then
-              local currentXP = WNTR_recipeToExperience[realm] and WNTR_recipeToExperience[realm][character] and WNTR_recipeToExperience[realm][character][recipeId]
-              local nextXP = WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
-              if currentXP and nextXP then
-                recipeName = recipeName .. " (Rank " .. rank .. ", " .. currentXP .. "/" .. nextXP .. ")"
-              else
-                recipeName = recipeName .. " (Rank " .. rank .. ")"
+
+            -- To hide recipes if conditions apply.
+            local skipRecipe = false
+
+            -- For Legion/BfA ranked recipes (which have previousRecipeID/nextRecipeID),
+            -- we skip ranks below the character's highest learned rank.
+            -- Because unlike Shadowlands, in Legion/BfA you always craft the highest rank only.
+            if recipeInfo and WNTR_recipeToRank[recipeId]
+                and (recipeInfo.previousRecipeID or recipeInfo.nextRecipeID) then
+              local nextId = recipeInfo.nextRecipeID
+              while nextId do
+                if difficultyByRecipe[nextId] ~= nil then
+                  skipRecipe = true
+                  break
+                end
+                local nextInfo = GetCachedRecipeInfo(nextId)
+                nextId = nextInfo and nextInfo.nextRecipeID
               end
             end
-            -- recipeName = recipeName .. " [" .. recipeId .. "]"  -- DEBUG: recipeId display
 
-            -- When a profession is maxed out, the API may still report learned recipes with
-            -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).
-            -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet,
-            -- or the corrected difficulty (nil) indicates it is not learned yet.
-            if recipeInfo.learned and skillLevel and maxLevel and maxLevel > 0 and skillLevel >= maxLevel and difficulty ~= nil then
-              local rankNotMaxed = rank and WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
-              if not rankNotMaxed then
+            -- "Next unlearned rank only": for ranked recipes the character hasn't learned,
+            -- only show the immediate next rank after the highest learned rank.
+            if not skipRecipe and WNTR_config.nextUnlearnedRankOnly
+                and recipeInfo and WNTR_recipeToRank[recipeId] and difficulty == nil then
+              if recipeInfo.previousRecipeID or recipeInfo.nextRecipeID then
+                -- Legion/BfA style: walk the previousRecipeID chain to find
+                -- whether the immediately preceding rank is learned.
+                local prevId = recipeInfo.previousRecipeID
+                if prevId then
+                  -- Skip unless the previous rank is learned by this character.
+                  if difficultyByRecipe[prevId] == nil then
+                    skipRecipe = true
+                  end
+                end
+                -- If there is no previousRecipeID, this is rank 1 — always show it.
+              else
+                -- Shadowlands style: ranks assigned by name via WNTR_recipeToRank.
+                -- Find the highest learned rank for recipes with the same name.
+                local myRank = WNTR_recipeToRank[recipeId]
+                local nextExpectedRank = 1
+                for otherRecipeId, otherDifficulty in pairs(difficultyByRecipe) do
+                  if otherDifficulty ~= nil then
+                    local otherRank = WNTR_recipeToRank[otherRecipeId]
+                    if otherRank then
+                      local otherInfo = GetCachedRecipeInfo(otherRecipeId)
+                      if otherInfo and otherInfo.name == recipeInfo.name and otherRank >= nextExpectedRank then
+                        nextExpectedRank = otherRank + 1
+                      end
+                    end
+                  end
+                end
+                if myRank ~= nextExpectedRank then
+                  skipRecipe = true
+                end
+              end
+            end
+
+            if not skipRecipe then
+
+              local textColor = IMPOSSIBLE_DIFFICULTY_COLOR
+              if difficulty == 0 then
+                textColor = DIFFICULT_DIFFICULTY_COLOR
+              elseif difficulty == 1 then
+                textColor = FAIR_DIFFICULTY_COLOR
+              elseif difficulty == 2 then
+                textColor = EASY_DIFFICULTY_COLOR
+              elseif difficulty == 3 then
                 textColor = TRIVIAL_DIFFICULTY_COLOR
               end
-            end
-
-            local recipeLine = AcquireLineRecord()
-            recipeLine.text = recipeName
-            recipeLine.kind = "recipe"
-            recipeLine.r = textColor.r
-            recipeLine.g = textColor.g
-            recipeLine.b = textColor.b
-            recipeLine.profSortKey = profName
-            if WNTR_config.showUncollectedTransmog then
-              if WNTR_recipeWithUncollectedTransmog[recipeId] then
-                recipeLine.transmog = "unknown"
-              elseif WNTR_recipeWithUncollectedTransmogItem[recipeId] then
-                recipeLine.transmog = "item"
+              local recipeName = recipeInfo.name
+              local rank = WNTR_recipeToRank[recipeId]
+              if rank then
+                local currentXP = WNTR_recipeToExperience[realm] and WNTR_recipeToExperience[realm][character] and WNTR_recipeToExperience[realm][character][recipeId]
+                local nextXP = WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
+                if currentXP and nextXP then
+                  recipeName = recipeName .. " (Rank " .. rank .. ", " .. currentXP .. "/" .. nextXP .. ")"
+                else
+                  recipeName = recipeName .. " (Rank " .. rank .. ")"
+                end
               end
-            end
-            tinsert(characterLines, recipeLine)
+              -- recipeName = recipeName .. " [" .. recipeId .. "]"  -- DEBUG: recipeId display
+
+              -- When a profession is maxed out, the API may still report learned recipes with
+              -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).
+              -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet,
+              -- or the corrected difficulty (nil) indicates it is not learned yet.
+              if recipeInfo.learned and skillLevel and maxLevel and maxLevel > 0 and skillLevel >= maxLevel and difficulty ~= nil then
+                local rankNotMaxed = rank and WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
+                if not rankNotMaxed then
+                  textColor = TRIVIAL_DIFFICULTY_COLOR
+                end
+              end
+
+              local recipeLine = AcquireLineRecord()
+              recipeLine.text = recipeName
+              recipeLine.kind = "recipe"
+              recipeLine.r = textColor.r
+              recipeLine.g = textColor.g
+              recipeLine.b = textColor.b
+              recipeLine.profSortKey = profName
+              if WNTR_config.showUncollectedTransmog then
+                if WNTR_recipeWithUncollectedTransmog[recipeId] then
+                  recipeLine.transmog = "unknown"
+                elseif WNTR_recipeWithUncollectedTransmogItem[recipeId] then
+                  recipeLine.transmog = "item"
+                end
+              end
+              tinsert(characterLines, recipeLine)
+
+            end -- if not skipRecipe
           end
         end
       end
