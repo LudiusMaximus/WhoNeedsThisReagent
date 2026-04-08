@@ -4,6 +4,7 @@ local CONFIG_DEFAULTS = {
   showPendingSyncMessages = true,
   showStatusMessages      = true,
   showUncollectedTransmog = true,
+  nextUnlearnedRankOnly   = true,
 }
 
 -- Cache of global WoW API tables/functions.
