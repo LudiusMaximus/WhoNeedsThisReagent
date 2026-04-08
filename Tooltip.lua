@@ -196,6 +196,7 @@ local function ReleaseAllFontStrings()
   for i = 1, fontStringPoolActive do
     fontStringPool[i]:Hide()
     fontStringPool[i]:ClearAllPoints()
+    fontStringPool[i]:SetAlpha(1)
   end
   fontStringPoolActive = 0
 end
@@ -338,8 +339,12 @@ local function ShowSecondTooltip()
             recipeLine.g = textColor.g
             recipeLine.b = textColor.b
             recipeLine.profSortKey = profName
-            if WNTR_config.showUncollectedTransmog and WNTR_recipeWithUncollectedTransmog[recipeId] then
-              recipeLine.transmog = true
+            if WNTR_config.showUncollectedTransmog then
+              if WNTR_recipeWithUncollectedTransmog[recipeId] then
+                recipeLine.transmog = "unknown"
+              elseif WNTR_recipeWithUncollectedTransmogItem[recipeId] then
+                recipeLine.transmog = "item"
+              end
             end
             tinsert(characterLines, recipeLine)
           end
@@ -549,10 +554,14 @@ local function ShowSecondTooltip()
       if kind == "character" then yOffset = yOffset - CHARACTER_PRE_SPACING end
       fontStringPool[idx]:SetPoint("TOPLEFT", tooltipFrame, "TOPLEFT", x + indent, yOffset)
       -- Uncollected transmog indicator: place icon in the indent space to the left of the recipe name.
-      if collectedLines[idx].transmog then
+      -- "unknown" = appearance not collected (full opacity).
+      -- "item" = appearance collected but not from this item (semi-transparent).
+      local transmog = collectedLines[idx].transmog
+      if transmog then
         local iconFs = AcquireFontString()
         iconFs:SetFontObject(GameTooltipText)
         iconFs:SetText("|A:Crosshair_Transmogrify_32:15:15|a")
+        iconFs:SetAlpha(transmog == "item" and 0.35 or 1)
         iconFs:SetPoint("TOPLEFT", tooltipFrame, "TOPLEFT", x+2, yOffset+2)
       end
       yOffset = yOffset - (tooltipLineHeight + LINE_SPACING)

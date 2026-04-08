@@ -29,6 +29,11 @@ WNTR_recipeToExperience = WNTR_recipeToExperience or {}
 -- Not character-specific: C_TransmogCollection is account-wide.
 WNTR_recipeWithUncollectedTransmog = WNTR_recipeWithUncollectedTransmog or {}
 
+-- WNTR_recipeWithUncollectedTransmogItem[recipeId] = true for recipes that produce an item
+-- whose transmog appearance IS collected, but not from this specific item.
+-- ("You've collected this appearance, but not from this item")
+WNTR_recipeWithUncollectedTransmogItem = WNTR_recipeWithUncollectedTransmogItem or {}
+
 
 -- Skill level per [realmName][playerName][variantSkillLineId] (plain number), and max level per [realmName][playerName]["maxLevels"][variantSkillLineId].
 -- We need to store max levels character-specifically because of profession specializations (e.g. Kul Tiran Herbalism vs. regular Herbalism).
