@@ -74,7 +74,7 @@ do
       GameTooltip_SetTitle(tooltip, "Who Needs This Reagent?")
       GameTooltip_AddNormalLine(tooltip, "Shows in a reagent's tooltip which of your characters can use it for crafting.", true)
       GameTooltip_AddBlankLineToTooltip(tooltip)
-      GameTooltip_AddNormalLine(tooltip, "When this minimap icon is glowing, a sync of profession data is required; e.g. after you learn a new recipe or skill up. We cannot sync automatically but you can trigger a sync by clicking this minimap button or using the console command of the addon's console message.", true)
+      GameTooltip_AddNormalLine(tooltip, "When this minimap icon is glowing, a sync of profession data is required; e.g. after you learn a new recipe or skill up. We cannot sync automatically but you can trigger a sync by clicking this minimap button (if enabled) or using the command of the addon's console message (if enabled).", true)
       if #pendingBaseSkillLineIds > 0 then
         GameTooltip_AddBlankLineToTooltip(tooltip)
         GameTooltip_AddErrorLine(tooltip, "The following professions need a sync:")
