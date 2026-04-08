@@ -535,6 +535,28 @@ end
 
 
 
+-- Spread re-checking of uncollected transmog recipes across frames to avoid FPS drops.
+-- Only recipes currently in WNTR_recipeWithUncollectedTransmog need re-checking,
+-- because only those can transition from "uncollected" to "collected".
+-- We snapshot the keys into an array first, because UpdateUncollectedTransmog may
+-- remove keys from the table (invalidating next()-based iteration in Lua 5.1).
+local TRANSMOG_RECIPES_PER_FRAME = 20
+local transmogRefreshList = {}
+local transmogRefreshIndex = 0
+local transmogRefreshFrame = CreateFrame("Frame")
+
+local function TransmogRefreshOnUpdate()
+  for _ = 1, TRANSMOG_RECIPES_PER_FRAME do
+    transmogRefreshIndex = transmogRefreshIndex + 1
+    if transmogRefreshIndex > #transmogRefreshList then
+      transmogRefreshFrame:SetScript("OnUpdate", nil)
+      return
+    end
+    UpdateUncollectedTransmog(transmogRefreshList[transmogRefreshIndex])
+  end
+end
+
+
 local function EventFrameFunction(self, event, ...)
 
   -- #########################################################################
@@ -764,6 +786,22 @@ local function EventFrameFunction(self, event, ...)
     -- the shared timer batches them (and any concurrent skill-ups) into one sync.
     ScheduleProcessPendingChanges()
 
+
+  -- #########################################################################
+  -- A transmog appearance was collected. Re-check all recipes that were previously
+  -- flagged as uncollected, spread across frames to avoid FPS drops.
+  elseif event == "TRANSMOG_COLLECTION_SOURCE_ADDED" then
+    wipe(transmogRefreshList)
+    -- Re-check both tables: an "unknown" recipe could become "item" or clear entirely,
+    -- and an "item" recipe could clear if this specific source was collected.
+    for recipeId in pairs(WNTR_recipeWithUncollectedTransmog) do
+      tinsert(transmogRefreshList, recipeId)
+    end
+    for recipeId in pairs(WNTR_recipeWithUncollectedTransmogItem) do
+      tinsert(transmogRefreshList, recipeId)
+    end
+    transmogRefreshIndex = 0
+    transmogRefreshFrame:SetScript("OnUpdate", TransmogRefreshOnUpdate)
   end
 end
 
@@ -775,3 +813,4 @@ eventFrame:RegisterEvent("TRADE_SKILL_SHOW")
 eventFrame:RegisterEvent("TRADE_SKILL_LIST_UPDATE")
 eventFrame:RegisterEvent("CONSOLE_MESSAGE")
 eventFrame:RegisterEvent("NEW_RECIPE_LEARNED")
+eventFrame:RegisterEvent("TRANSMOG_COLLECTION_SOURCE_ADDED")
