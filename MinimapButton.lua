@@ -72,9 +72,9 @@ do
 
     function plugin.OnTooltipShow(tooltip)
       GameTooltip_SetTitle(tooltip, "Who Needs This Reagent?")
-      GameTooltip_AddNormalLine(tooltip, "Shows in a reagent's tooltip which of your characters can use it for crafting.", true)
+      GameTooltip_AddNormalLine(tooltip, "Shows in a reagent's tooltip which of your characters can use it for crafting. Holding down SHIFT while the tooltip is shown displays further information.", true)
       GameTooltip_AddBlankLineToTooltip(tooltip)
-      GameTooltip_AddNormalLine(tooltip, "When this minimap icon is glowing, a sync of profession data is required; e.g. after you learn a new recipe or skill up. We cannot sync automatically but you can trigger a sync by clicking this minimap button (if enabled) or using the command of the addon's console message (if enabled).", true)
+      GameTooltip_AddNormalLine(tooltip, "When this minimap button is glowing, a sync of profession data is required; e.g. after you learn a new recipe or skill up. We cannot sync automatically but you can trigger a sync by clicking this button (if enabled) or using the command of the addon's console message (if enabled).", true)
       if #pendingBaseSkillLineIds > 0 then
         GameTooltip_AddBlankLineToTooltip(tooltip)
         GameTooltip_AddErrorLine(tooltip, "The following professions need a sync:")
@@ -102,15 +102,15 @@ do
 
           local cb, submenu
 
-          submenu = menu:CreateButton("Console messages")
+          submenu = menu:CreateButton("Sync Settings")
           submenu:SetOnEnter(function(frame, desc)
             HideSettingsTooltipImmediately()
             desc:ForceOpenSubmenu()
-            ShowSettingsTooltip(frame, "Console messages", "Settings for chat messages related to profession synchronization.")
+            ShowSettingsTooltip(frame, "Sync Settings", "Settings for chat messages related to profession syncing.")
           end)
           submenu:SetOnLeave(function() HideSettingsTooltipDelayed() end)
 
-          submenu:CreateTitle("Console messages")
+          submenu:CreateTitle("Sync Settings")
 
           cb = submenu:CreateCheckbox(
             "Pending sync messages",
@@ -132,15 +132,15 @@ do
           end)
           cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
 
-          submenu = menu:CreateButton("Tooltip")
+          submenu = menu:CreateButton("Tooltip Settings")
           submenu:SetOnEnter(function(frame, desc)
             HideSettingsTooltipImmediately()
             desc:ForceOpenSubmenu()
-            ShowSettingsTooltip(frame, "Tooltip", "Settings that affect the reagent tooltip display.")
+            ShowSettingsTooltip(frame, "Tooltip Settings", "Settings that affect the reagent tooltip display.")
           end)
           submenu:SetOnLeave(function() HideSettingsTooltipDelayed() end)
 
-          submenu:CreateTitle("Tooltip")
+          submenu:CreateTitle("Tooltip Settings")
 
           cb = submenu:CreateCheckbox(
             "Next unlearned rank only",
@@ -148,7 +148,7 @@ do
             function() WNTR_config.nextUnlearnedRankOnly = not WNTR_config.nextUnlearnedRankOnly end
           )
           cb:SetOnEnter(function(frame)
-            ShowSettingsTooltip(frame, "Next unlearned rank only", "If a recipe has several ranks, only show the next rank you have not yet learned. E.g. if a recipe has 4 ranks and you know rank 2, only rank 3 is shown as unlearned while the also unlearned rank 4 is disregarded.")
+            ShowSettingsTooltip(frame, "Next unlearned rank only", "If a recipe has several ranks, only show the next rank you have not yet learned. E.g. if a recipe has 4 ranks and you know rank 2, only rank 3 is shown as unlearned while the also unlearned rank 4 is hidden.")
           end)
           cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
 
