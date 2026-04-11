@@ -13,3 +13,4 @@ Helpers.lua
 MinimapButton.lua
 Sync.lua
 Tooltip.lua
+ProfessionFrame.lua

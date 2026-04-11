@@ -135,6 +135,10 @@ addon.pendingBaseSkillLineIds = {}
 -- Starts as a no-op; overridden by MinimapButton.lua if LDB is available.
 addon.UpdateMinimapGlow = function() end
 
+-- No-ops; overridden by Tooltip.lua / ProfessionFrame.lua respectively.
+addon.InvalidateReagentCache = function() end
+addon.RefreshProfessionRecipeList = function() end
+
 
 -- -- For debugging.
 -- local function NoEscape(toPrint)
