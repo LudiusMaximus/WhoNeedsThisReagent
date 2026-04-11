@@ -21,6 +21,14 @@ local wipe                                          = _G.wipe
 local GetRecipesForReagent = addon.GetRecipesForReagent
 
 
+-- Reagent lookup cache: maps itemId -> true/false (is/isn't a known reagent).
+-- Avoids iterating all profession variants on every tooltip. Invalidated on sync.
+local reagentCache = {}
+
+function addon.InvalidateReagentCache()
+  wipe(reagentCache)
+end
+
 -- API result caches: avoid re-creating large tables on every tooltip rebuild.
 -- These rarely change during a session (recipe names are constant, learned status
 -- only changes on NEW_RECIPE_LEARNED which triggers a full sync anyway).
@@ -248,12 +256,17 @@ local function ShowSecondTooltip()
   -- Quick check: does any synced profession variant use this item as a reagent?
   -- This avoids all the pool allocations, API calls, and nested iteration below
   -- for the vast majority of items that aren't crafting ingredients.
-  local isKnownReagent = false
-  for variantId, reagents in pairs(WNTR_reagentToRecipe) do
-    if reagents[reagentId] then
-      isKnownReagent = true
-      break
+  -- Results are cached for the session; invalidated on sync via addon.InvalidateReagentCache().
+  local isKnownReagent = reagentCache[reagentId]
+  if isKnownReagent == nil then
+    isKnownReagent = false
+    for variantId, reagents in pairs(WNTR_reagentToRecipe) do
+      if reagents[reagentId] then
+        isKnownReagent = true
+        break
+      end
     end
+    reagentCache[reagentId] = isKnownReagent
   end
   if not isKnownReagent then
     HideSecondTooltip()
@@ -622,7 +635,7 @@ local function ShowSecondTooltip()
         local iconFs = AcquireFontString()
         iconFs:SetFontObject(GameTooltipText)
         iconFs:SetText("|A:Crosshair_Transmogrify_32:15:15|a")
-        iconFs:SetAlpha(transmog == "item" and 0.35 or 1)
+        iconFs:SetAlpha(transmog == "item" and 0.5 or 1)
         iconFs:SetPoint("TOPLEFT", tooltipFrame, "TOPLEFT", x+2, yOffset+2)
       end
       yOffset = yOffset - (tooltipLineHeight + LINE_SPACING)

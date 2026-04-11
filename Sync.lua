@@ -1,10 +1,11 @@
 local folderName, addon = ...
 
 local CONFIG_DEFAULTS = {
-  showPendingSyncMessages = true,
-  showStatusMessages      = true,
-  showUncollectedTransmog = true,
-  nextUnlearnedRankOnly   = true,
+  showPendingSyncMessages          = true,
+  showStatusMessages               = true,
+  showUncollectedTransmog          = true,
+  nextUnlearnedRankOnly            = true,
+  uncollectedTransmogInProfessions = true,
 }
 
 -- Cache of global WoW API tables/functions.
@@ -282,6 +283,7 @@ local function CompletePendingSync(baseSkillLineId)
   if WNTR_config.showStatusMessages then
     print("|cff00ccffWhoNeedsThisReagent:|r ...", C_TradeSkillUI_GetProfessionInfoBySkillLineID(baseSkillLineId).professionName, "synced successfully!")
   end
+  addon.InvalidateReagentCache()
   addon.UpdateMinimapGlow()
 end
 
@@ -551,6 +553,7 @@ local function TransmogRefreshOnUpdate()
     transmogRefreshIndex = transmogRefreshIndex + 1
     if transmogRefreshIndex > #transmogRefreshList then
       transmogRefreshFrame:SetScript("OnUpdate", nil)
+      addon.RefreshProfessionRecipeList()
       return
     end
     UpdateUncollectedTransmog(transmogRefreshList[transmogRefreshIndex])
@@ -681,6 +684,10 @@ local function EventFrameFunction(self, event, ...)
       local activeBaseSkillLineId = activeProfessionInfo and activeProfessionInfo.professionID
 
       if activeBaseSkillLineId and SyncBaseProfession(activeBaseSkillLineId) then
+        -- Refresh the profession frame's recipe list so transmog icons reflect
+        -- the just-updated transmog tables (our hook may have run before the sync).
+        addon.RefreshProfessionRecipeList()
+
         -- Check if this profession was pending; if so, complete it with messaging.
         local wasPending = false
         for _, pendingBaseSkillLineId in ipairs(pendingBaseSkillLineIds) do

@@ -158,7 +158,30 @@ do
             function() WNTR_config.showUncollectedTransmog = not WNTR_config.showUncollectedTransmog end
           )
           cb:SetOnEnter(function(frame)
-            ShowSettingsTooltip(frame, "Uncollected transmog icon", "Display a transmogrification icon next to recipes whose crafted item has an appearance you haven't collected yet. Semi-transparent if the appearance is known from a different item.")
+            ShowSettingsTooltip(frame, "Uncollected transmog icon", "Display a transmog icon next to recipes whose crafted item has an appearance you haven't collected yet. Semi-transparent if the appearance is known from a different item.")
+          end)
+          cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+
+          submenu = menu:CreateButton("Miscellaneous")
+          submenu:SetOnEnter(function(frame, desc)
+            HideSettingsTooltipImmediately()
+            desc:ForceOpenSubmenu()
+            ShowSettingsTooltip(frame, "Miscellaneous", "Additional settings.")
+          end)
+          submenu:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+
+          submenu:CreateTitle("Miscellaneous")
+
+          cb = submenu:CreateCheckbox(
+            "Unknown transmog in professions",
+            function() return WNTR_config.uncollectedTransmogInProfessions end,
+            function()
+              WNTR_config.uncollectedTransmogInProfessions = not WNTR_config.uncollectedTransmogInProfessions
+              addon.RefreshProfessionRecipeList()
+            end
+          )
+          cb:SetOnEnter(function(frame)
+            ShowSettingsTooltip(frame, "Transmog icon in professions", "Display a transmog icon next to recipes in the profession frame if the crafted item has an appearance you haven't collected yet. Semi-transparent if the appearance is known from a different item.")
           end)
           cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
         end)

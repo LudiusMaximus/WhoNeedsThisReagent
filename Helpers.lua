@@ -1,6 +1,7 @@
 local _, addon = ...
 
 -- Cache of global WoW API tables/functions.
+local C_Item_IsItemDataCachedByID                = _G.C_Item.IsItemDataCachedByID
 local C_TooltipInfo_GetItemByID                  = _G.C_TooltipInfo.GetItemByID
 local C_TradeSkillUI_GetRecipeInfo               = _G.C_TradeSkillUI.GetRecipeInfo
 local C_TradeSkillUI_GetRecipeSchematic          = _G.C_TradeSkillUI.GetRecipeSchematic
@@ -212,6 +213,13 @@ function addon.UpdateUncollectedTransmog(recipeId)
   if not schematic or not schematic.outputItemID then
     WNTR_recipeWithUncollectedTransmog[recipeId] = nil
     WNTR_recipeWithUncollectedTransmogItem[recipeId] = nil
+    return
+  end
+
+  -- If the item data hasn't been cached by the client yet (common right after login),
+  -- the tooltip will be nil or incomplete. In that case, preserve existing saved values
+  -- rather than incorrectly clearing them.
+  if not C_Item_IsItemDataCachedByID(schematic.outputItemID) then
     return
   end
 
