@@ -8,6 +8,38 @@ local CONFIG_DEFAULTS = {
   uncollectedTransmogInProfessions = true,
 }
 
+
+-- Base profession skill-line IDs for the three gathering professions. By
+-- default the addon ignores their skill-ups and recipe-learns (like fishing
+-- and archaeology) because their recipes don't consume reagents. The single
+-- exception is the smelting recipes available on Classic/TBC/Wrath/Cata/MoP
+-- Mining - handled by the per-variant thresholds in gatheringSkillThresholds
+-- below.
+--
+-- IDs see: https://warcraft.wiki.gg/wiki/TradeSkillLineID
+local gatheringBaseProfessionIds = {
+  [393] = true,  -- Skinning
+  [186] = true,  -- Mining
+  [182] = true,  -- Herbalism
+}
+
+-- Per-variant skill-level thresholds for the few gathering variants that DO
+-- have recipes worth syncing (Mining's smelting recipes, pre-Warlords). A
+-- CONSOLE_MESSAGE skill-up for one of these variants only marks it pending
+-- when the new skill level crosses one of the listed thresholds (i.e. some
+-- recipe's relativeDifficulty just flipped: orange -> yellow / yellow -> green
+-- / green -> grey). All other gathering variants - and crossings outside
+-- these lists - are ignored entirely.
+--
+-- IDs see: https://warcraft.wiki.gg/wiki/TradeSkillLineID
+local gatheringSkillThresholds = {
+  [2572] = {1, 20, 40, 50, 57, 60, 65, 75, 100, 105, 110, 115, 125, 130, 135, 150, 155, 160, 165, 175, 200, 205, 210, 245, 250, 255, 260, 270, 290, 300, 305, 310},  -- Classic Mining
+  [2571] = {1, 5, 10, 13, 25, 32, 40, 50, 57, 65, 75},  -- TBC Mining
+  [2570] = {1, 13, 25, 50, 62, 75},  -- Wrath Mining
+  [2569] = {1, 13, 25, 50, 62, 75},  -- Cata Mining
+  [2568] = {1, 25, 50, 75},  -- MoP Mining
+}
+
 -- Cache of global WoW API tables/functions.
 local C_Timer_NewTicker                             = _G.C_Timer.NewTicker
 local C_Timer_NewTimer                              = _G.C_Timer.NewTimer
@@ -21,12 +53,14 @@ local C_TradeSkillUI_GetProfessionInfoBySkillLineID = _G.C_TradeSkillUI.GetProfe
 local C_TradeSkillUI_GetRecipeInfo                  = _G.C_TradeSkillUI.GetRecipeInfo
 local C_TradeSkillUI_IsRecipeInSkillLine            = _G.C_TradeSkillUI.IsRecipeInSkillLine
 local C_TradeSkillUI_OpenTradeSkill                 = _G.C_TradeSkillUI.OpenTradeSkill
+local debugprofilestop                              = _G.debugprofilestop
 local GetProfessionInfo                             = _G.GetProfessionInfo
 local GetProfessions                                = _G.GetProfessions
 local GetRealmName                                  = _G.GetRealmName
 local UnitName                                      = _G.UnitName
 
 local string_find                                   = _G.string.find
+local string_gmatch                                 = _G.string.gmatch
 local string_match                                  = _G.string.match
 local table_remove                                  = _G.table.remove
 local tinsert                                       = _G.tinsert
@@ -60,9 +94,25 @@ local syncFromChat = false
 -- A single craft can trigger both a skill-up (CONSOLE_MESSAGE) and a new recipe
 -- (NEW_RECIPE_LEARNED) almost simultaneously; learning a new profession can fire
 -- many recipe events at once. The 0.5s timer batches all of these into one
--- ProcessPendingChanges() call, resulting in a single SyncOrAddPending per base profession.
-local pendingNewRecipes = {}
+-- ProcessPendingChanges() call, resulting in a single sync per base profession.
 local pendingChangesTimer = nil
+
+-- Debounce for TRADE_SKILL_LIST_UPDATE in the normal (non-silent) flow.
+-- Completing a craft while the profession UI is open fires the event several
+-- times in quick succession; the 0.5s timer batches them into one sync.
+-- pendingFullSyncBase tracks the base profession that timer will fully sync, so
+-- ScheduleProcessPendingChanges() can skip arming when its variant is covered.
+local tradeSkillListUpdateTimer = nil
+local pendingFullSyncBase = nil
+
+-- Gate against repeated TRADE_SKILL_LIST_UPDATE events while the profession UI
+-- is open. Set once the first sync of an open-UI session runs successfully.
+-- Skill-ups are caught by CONSOLE_MESSAGE and new recipes by NEW_RECIPE_LEARNED,
+-- so the per-craft TRADE_SKILL_LIST_UPDATE fires are mostly redundant. Cleared
+-- on TRADE_SKILL_CLOSE and on TRADE_SKILL_DATA_SOURCE_CHANGED so a profession
+-- switch inside the open UI still re-syncs. The accepted trade-off is stale
+-- Shadowlands ranked-recipe XP between rank-ups (corrected on next reopen).
+local syncedSinceShow = false
 
 
 
@@ -122,123 +172,104 @@ local function GetBaseOfVariant(variantSkillLineId)
 end
 
 
--- Backend readiness must be verified by the caller (SyncBaseProfession) before calling this.
-local function SyncVariantProfession(variantSkillLineId, recipeIds)
+-- Time budget (in milliseconds) for spread work per frame.
+-- debugprofilestop measures wall-clock time in ms.
+-- 2ms is ~12% of a 16.7ms frame at 60fps - imperceptible.
+local SPREAD_BUDGET_MS = 2
 
-  local realmName  = GetRealmName()
-  local playerName = UnitName("player")
+-- Spread UpdateUncollectedTransmog calls across frames to avoid FPS drops.
+-- Used by both SyncBaseProfession (deferred transmog for all processed recipes)
+-- and TRANSMOG_COLLECTION_SOURCE_ADDED (re-check previously-flagged recipes).
+--
+-- State is stored in module-level variables because the processing logic is always
+-- the same (UpdateUncollectedTransmog per recipe, RefreshProfessionRecipeList when done).
+-- Multiple callers may safely append to the queue mid-spread because processing is
+-- idempotent - re-checking the same recipe just re-reads its tooltip.
+-- No cancel function needed: new work is additive, never conflicting.
+local transmogRefreshList = {}
+local transmogRefreshIndex = 0
+local transmogRefreshFrame = CreateFrame("Frame")
 
-
-  -- Global sync needed if explicitly pending or data is missing.
-  local needsGlobalSync = WNTR_pendingGlobalSync[variantSkillLineId]
-      or not WNTR_reagentToRecipe[variantSkillLineId]
-      or not next(WNTR_reagentToRecipe[variantSkillLineId])
-
-  -- Clear old data to be refilled.
-  -- Character specific data is always updated.
-  WNTR_recipeToDifficulty[realmName] = WNTR_recipeToDifficulty[realmName] or {}
-  WNTR_recipeToDifficulty[realmName][playerName] = WNTR_recipeToDifficulty[realmName][playerName] or {}
-  WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId] = nil
-
-  -- Don't wipe, just override global data because a character can only
-  -- sync the profession variants they have learned.
-
-  -- Collecting { [recipeId] = recipeInfo } for post-processing (AssignRanksByName, CorrectShadowlandsRankedRecipeDifficulty, UpdateRecipeExperience).
-  -- TODO: Somewhat redundant to store recipeId and recipeInfo, as recipeInfo also includes recipeID field.
-  --       Particularly below, it is redundant to pass both recipeId and recipeInfo to post-processing functions.
-  local variantRecipeInfos = {}
-
-  for _, recipeId in pairs(recipeIds) do
-
-    -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.IsRecipeInSkillLine
-    if C_TradeSkillUI_IsRecipeInSkillLine(recipeId, variantSkillLineId) then
-
-      local recipeInfo = C_TradeSkillUI_GetRecipeInfo(recipeId)
-
-      if recipeInfo then
-
-        -- Collect for post-processing.
-        variantRecipeInfos[recipeId] = recipeInfo
-
-        if needsGlobalSync then
-
-          AddReagentsForRecipe(recipeId, variantSkillLineId)
-
-          -- Store the authoritative variant-to-recipes mapping (colon-delimited string).
-          -- IsRecipeInSkillLine() is reliable here because the backend is active.
-          -- We append rather than wipe, preserving entries from other characters' professions.
-          local existing = WNTR_variantToRecipes[variantSkillLineId]
-          local recipeStr = tostring(recipeId)
-          if not existing then
-            WNTR_variantToRecipes[variantSkillLineId] = recipeStr
-          elseif not string_find(":" .. existing .. ":", ":" .. recipeStr .. ":", 1, true) then
-            WNTR_variantToRecipes[variantSkillLineId] = existing .. ":" .. recipeStr
-          end
-
-          -- Is this a Legion/Shadowlands ranked recipe?
-          if recipeInfo.previousRecipeID or recipeInfo.nextRecipeID then
-            WNTR_recipeToRank[recipeId] = GetRecipeRank(recipeInfo)
-            -- print("WNTR DEBUG:", recipeId, recipeInfo.name, "prev=", tostring(recipeInfo.previousRecipeID), "next=", tostring(recipeInfo.nextRecipeID), "rank=", WNTR_recipeToRank[recipeId])
-          end
-
-        end
-
-        if recipeInfo.learned then
-          WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId] = WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId] or {}
-          WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId][recipeId] = recipeInfo.relativeDifficulty
-        end
-
-        UpdateUncollectedTransmog(recipeId)
-
-        -- If this recipe was a pending new recipe, ProcessPendingChanges() no longer needs to take care of it.
-        if pendingNewRecipes[recipeId] then
-          pendingNewRecipes[recipeId] = nil
-        end
-
-      end -- if recipeInfo
-    end -- if C_TradeSkillUI_IsRecipeInSkillLine(recipeId, variantSkillLineId
-  end -- for _, recipeId in pairs(recipeIds)
-
-
-  if needsGlobalSync then
-    -- Assign ranks by name grouping for Shadowlands ranked recipes that lack the previousRecipeID/nextRecipeID logic.
-    AssignRanksByName(variantRecipeInfos)
-    -- Mark this variant as no longer pending for global sync.
-    WNTR_pendingGlobalSync[variantSkillLineId] = nil
-  end
-
-  -- Correct Shadowlands ranked recipe learned/difficulty, then store XP.
-  -- Both must happen after AssignRanksByName so WNTR_recipeToRank is fully populated.
-  for recipeId, recipeInfo in pairs(variantRecipeInfos) do
-    if recipeInfo.learned then
-      CorrectShadowlandsRankedRecipeDifficulty(realmName, playerName, recipeId, recipeInfo, variantSkillLineId)
-      UpdateRecipeExperience(realmName, playerName, recipeId, recipeInfo)
+local function TransmogRefreshFunction()
+  local start = debugprofilestop()
+  while debugprofilestop() - start < SPREAD_BUDGET_MS do
+    transmogRefreshIndex = transmogRefreshIndex + 1
+    if transmogRefreshIndex > #transmogRefreshList then
+      transmogRefreshFrame:SetScript("OnUpdate", nil)
+      addon.RefreshProfessionRecipeList()
+      return
     end
+    UpdateUncollectedTransmog(transmogRefreshList[transmogRefreshIndex])
   end
+end
 
-  -- Update skill level and variant-to-base mapping for this variant.
-  local variantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(variantSkillLineId)
-  if variantInfo then
-    if variantInfo.parentProfessionID then
-      WNTR_variantToBaseProfession[variantSkillLineId] = variantInfo.parentProfessionID
-    end
-    WNTR_variantToSkillLevel[realmName] = WNTR_variantToSkillLevel[realmName] or {}
-    WNTR_variantToSkillLevel[realmName][playerName] = WNTR_variantToSkillLevel[realmName][playerName] or {}
-    WNTR_variantToSkillLevel[realmName][playerName][variantSkillLineId] = variantInfo.skillLevel
-    WNTR_variantToSkillLevel[realmName][playerName]["maxLevels"] = WNTR_variantToSkillLevel[realmName][playerName]["maxLevels"] or {}
-    WNTR_variantToSkillLevel[realmName][playerName]["maxLevels"][variantSkillLineId] = variantInfo.maxSkillLevel
+-- Append recipe IDs to the transmog refresh queue and start/continue the spread.
+local function QueueTransmogRefresh(recipeIds)
+  if not transmogRefreshFrame:GetScript("OnUpdate") then
+    -- No refresh in progress - reset for a clean run.
+    wipe(transmogRefreshList)
+    transmogRefreshIndex = 0
   end
-
-  -- Mark this variant as no longer pending for character specific sync.
-  if WNTR_pendingCharacterSync[realmName] and WNTR_pendingCharacterSync[realmName][playerName] then
-    WNTR_pendingCharacterSync[realmName][playerName][variantSkillLineId] = nil
+  for _, recipeId in ipairs(recipeIds) do
+    tinsert(transmogRefreshList, recipeId)
   end
-
+  if #transmogRefreshList > 0 then
+    transmogRefreshFrame:SetScript("OnUpdate", TransmogRefreshFunction)
+  end
 end
 
 
--- Sync all variants of a base profession.
-local function SyncBaseProfession(baseSkillLineId)
+-- Spread SyncBaseProfession's recipe iteration across frames to prevent FPS drops.
+-- When a sync runs with onComplete callback, the full-path recipe loop uses a
+-- time budget per frame. The narrow path (variant-specific, character-only) stays
+-- synchronous because it touches only ~50 recipes.
+--
+-- Unlike the transmog spread, sync state must be per-invocation: each SyncBaseProfession
+-- call creates unique closures (ProcessRecipe, FinishSync) that capture their own
+-- variantRecipeInfos, tempDifficulty, etc. syncSpreadState bridges the OnUpdate handler
+-- to these per-invocation closures.
+--
+-- A new sync must cancel any in-progress spread (via CancelSyncSpread) because the old
+-- closures hold stale data - their FinishSync would commit outdated difficulty values.
+-- Difficulty data is accumulated in a temporary table and committed atomically on
+-- completion, so cancellation never leaves saved variables in a partial state.
+local syncSpreadState = nil
+local syncSpreadFrame = CreateFrame("Frame")
+
+local function CancelSyncSpread()
+  syncSpreadFrame:SetScript("OnUpdate", nil)
+  syncSpreadState = nil
+end
+
+local function SyncSpreadOnUpdate()
+  local s = syncSpreadState
+  local start = debugprofilestop()
+  while debugprofilestop() - start < SPREAD_BUDGET_MS do
+    s.recipeIndex = s.recipeIndex + 1
+    if s.recipeIndex > #s.recipeIds then
+      CancelSyncSpread()
+      s.finishSync()
+      return
+    end
+    s.processRecipe(s.recipeIds[s.recipeIndex])
+  end
+end
+
+
+-- Sync profession data for a base profession. Iterates the recipe list once
+-- (O(recipes)) rather than once per variant, using GetProfessionInfoByRecipeID
+-- for O(1) variant lookup with IsRecipeInSkillLine fallback for the few recipes
+-- where the API returns a base ID instead of a variant (some MoP/Technique recipes).
+--
+-- variantFilter: optional table {[variantSkillLineId] = true}.
+--   nil  -> sync all variants of the base profession.
+--   set  -> sync only the listed variants (e.g. after a single skill-up).
+-- onComplete: optional callback, called when sync finishes.
+--   When provided, the full-path recipe loop is spread across frames.
+--   When nil, the entire sync runs synchronously.
+local function SyncBaseProfession(baseSkillLineId, variantFilter, onComplete)
+  -- print("SyncBaseProfession", baseSkillLineId)
+
   -- Backend readiness check: two conditions must both be met.
   -- 1) GetBaseProfessionInfo().professionID must match the desired profession.
   --    Returns 0 when the frame is closed, or a different ID if another profession is active.
@@ -250,20 +281,210 @@ local function SyncBaseProfession(baseSkillLineId)
     return false
   end
   if C_TradeSkillUI_GetProfessionChildSkillLineID() == 0 then
-    -- print("WNTR DEBUG: Backend does not seem to be initialized.")
     return false
   end
 
-  -- Fetch recipes of current backend profession.
-  -- nil means the API itself failed; an empty table is valid (e.g. Herbalism has no recipes).
-  local recipeIds = C_TradeSkillUI_GetAllRecipeIDs()
-  if not recipeIds then return false end
+  -- Cancel any in-progress spread (a new sync supersedes an old one).
+  -- Done AFTER the readiness check so a sync attempt that bails out doesn't
+  -- needlessly kill a valid in-progress spread for a different base.
+  CancelSyncSpread()
 
-  -- Sync all expansion variants for this profession.
-  -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.GetChildProfessionInfos
+  local realmName  = GetRealmName()
+  local playerName = UnitName("player")
+
+  -- Determine which variants to sync.
   local childInfos = C_TradeSkillUI_GetChildProfessionInfos()
+  local variantsToSync = {}
   for _, childInfo in ipairs(childInfos) do
-    SyncVariantProfession(childInfo.professionID, recipeIds)
+    local variantSkillLineId = childInfo.professionID
+    if not variantFilter or variantFilter[variantSkillLineId] then
+      variantsToSync[variantSkillLineId] = true
+    end
+  end
+
+  -- Per-variant setup: determine global sync needs.
+  local needsGlobalSync = {}    -- [variantSkillLineId] = bool
+  local anyGlobalSync = false
+  local variantRecipeInfos = {} -- [variantSkillLineId] = { [recipeId] = recipeInfo }
+  -- Accumulate difficulty data in a temp table; commit atomically on completion
+  -- so cancellation of a spread never leaves saved variables in a partial state.
+  local tempDifficulty = {}     -- [variantSkillLineId] = { [recipeId] = relativeDifficulty }
+
+  for variantSkillLineId in pairs(variantsToSync) do
+    needsGlobalSync[variantSkillLineId] = WNTR_pendingGlobalSync[variantSkillLineId]
+        or not WNTR_reagentToRecipe[variantSkillLineId]
+        or not next(WNTR_reagentToRecipe[variantSkillLineId])
+    if needsGlobalSync[variantSkillLineId] then anyGlobalSync = true end
+
+    variantRecipeInfos[variantSkillLineId] = {}
+    tempDifficulty[variantSkillLineId] = {}
+  end
+
+
+  -- When syncing specific variants for character-only updates (no global sync needed),
+  -- iterate only the recipes belonging to those variants via WNTR_variantToRecipes
+  -- instead of all recipes returned by GetAllRecipeIDs().
+  -- This cuts the loop from ~500 recipes to ~50 for a single-variant sync.
+  local useNarrowRecipeList = variantFilter and not anyGlobalSync
+  local transmogRecipeIds = {}
+
+  local function ProcessRecipe(recipeId, variantSkillLineId)
+    local recipeInfo = C_TradeSkillUI_GetRecipeInfo(recipeId)
+    if not recipeInfo then return end
+
+    variantRecipeInfos[variantSkillLineId][recipeId] = recipeInfo
+
+    if needsGlobalSync[variantSkillLineId] then
+
+      AddReagentsForRecipe(recipeId, variantSkillLineId)
+
+      -- Store the authoritative variant-to-recipes mapping (colon-delimited string).
+      -- We append rather than wipe, preserving entries from other characters' professions.
+      local existing = WNTR_variantToRecipes[variantSkillLineId]
+      local recipeStr = tostring(recipeId)
+      if not existing then
+        WNTR_variantToRecipes[variantSkillLineId] = recipeStr
+      elseif not string_find(":" .. existing .. ":", ":" .. recipeStr .. ":", 1, true) then
+        WNTR_variantToRecipes[variantSkillLineId] = existing .. ":" .. recipeStr
+      end
+
+      -- Is this a Legion/BfA ranked recipe?
+      if recipeInfo.previousRecipeID or recipeInfo.nextRecipeID then
+        WNTR_recipeToRank[recipeId] = GetRecipeRank(recipeInfo)
+      end
+
+    end
+
+    if recipeInfo.learned then
+      tempDifficulty[variantSkillLineId][recipeId] = recipeInfo.relativeDifficulty
+    end
+
+    -- Transmog re-check is only needed during global sync; the list is processed
+    -- as a frame-spread in FinishSync via QueueTransmogRefresh.
+    if anyGlobalSync then
+      tinsert(transmogRecipeIds, recipeId)
+    end
+
+  end
+
+
+  -- Resolve which synced variant a recipe belongs to (full-path only).
+  local function ResolveVariantAndProcess(recipeId)
+    local variantSkillLineId
+    local profInfo = C_TradeSkillUI_GetProfessionInfoByRecipeID(recipeId)
+    if profInfo then
+      if variantsToSync[profInfo.professionID] then
+        variantSkillLineId = profInfo.professionID
+      elseif profInfo.parentProfessionID and variantsToSync[profInfo.parentProfessionID] then
+        variantSkillLineId = profInfo.parentProfessionID
+      end
+    end
+    if not variantSkillLineId then
+      for vid in pairs(variantsToSync) do
+        if C_TradeSkillUI_IsRecipeInSkillLine(recipeId, vid) then
+          variantSkillLineId = vid
+          break
+        end
+      end
+    end
+    if variantSkillLineId then
+      ProcessRecipe(recipeId, variantSkillLineId)
+    end
+  end
+
+
+  -- Post-processing and commit. Runs after all recipes have been processed.
+  local function FinishSync()
+    -- Commit difficulty data atomically.
+    WNTR_recipeToDifficulty[realmName] = WNTR_recipeToDifficulty[realmName] or {}
+    WNTR_recipeToDifficulty[realmName][playerName] = WNTR_recipeToDifficulty[realmName][playerName] or {}
+    for vid in pairs(variantsToSync) do
+      WNTR_recipeToDifficulty[realmName][playerName][vid] = tempDifficulty[vid]
+    end
+
+    -- Per-variant post-processing.
+    for vid in pairs(variantsToSync) do
+
+      if needsGlobalSync[vid] then
+        -- Assign ranks by name grouping for Shadowlands ranked recipes.
+        AssignRanksByName(variantRecipeInfos[vid])
+        WNTR_pendingGlobalSync[vid] = nil
+      end
+
+      -- Correct Shadowlands ranked recipe learned/difficulty, then store XP.
+      -- Both must happen after AssignRanksByName so WNTR_recipeToRank is fully populated.
+      for recipeId, recipeInfo in pairs(variantRecipeInfos[vid]) do
+        if recipeInfo.learned then
+          CorrectShadowlandsRankedRecipeDifficulty(realmName, playerName, recipeId, recipeInfo, vid)
+          UpdateRecipeExperience(realmName, playerName, recipeId, recipeInfo)
+        end
+      end
+
+      -- Update skill level and variant-to-base mapping.
+      local variantInfo = C_TradeSkillUI_GetProfessionInfoBySkillLineID(vid)
+      if variantInfo then
+        if variantInfo.parentProfessionID then
+          WNTR_variantToBaseProfession[vid] = variantInfo.parentProfessionID
+        end
+        WNTR_variantToSkillLevel[realmName] = WNTR_variantToSkillLevel[realmName] or {}
+        WNTR_variantToSkillLevel[realmName][playerName] = WNTR_variantToSkillLevel[realmName][playerName] or {}
+        WNTR_variantToSkillLevel[realmName][playerName][vid] = variantInfo.skillLevel
+        WNTR_variantToSkillLevel[realmName][playerName]["maxLevels"] = WNTR_variantToSkillLevel[realmName][playerName]["maxLevels"] or {}
+        WNTR_variantToSkillLevel[realmName][playerName]["maxLevels"][vid] = variantInfo.maxSkillLevel
+      end
+
+      -- Mark this variant as no longer pending for character specific sync.
+      if WNTR_pendingCharacterSync[realmName] and WNTR_pendingCharacterSync[realmName][playerName] then
+        WNTR_pendingCharacterSync[realmName][playerName][vid] = nil
+      end
+    end
+
+    -- Only re-check transmog during global sync (first sync or after build change).
+    -- Transmog state doesn't change from normal gameplay events like selling items;
+    -- TRANSMOG_COLLECTION_SOURCE_ADDED handles the collection case separately.
+    if anyGlobalSync then
+      QueueTransmogRefresh(transmogRecipeIds)
+    end
+
+    if onComplete then onComplete() end
+  end
+
+
+  -- Execute the recipe iteration.
+  if useNarrowRecipeList then
+    -- Character-only sync: iterate only the known recipes for each filtered variant.
+    -- Small recipe set (~50), always synchronous.
+    for vid in pairs(variantsToSync) do
+      local recipesStr = WNTR_variantToRecipes[vid]
+      if recipesStr then
+        for idStr in string_gmatch(recipesStr, "[^:]+") do
+          ProcessRecipe(tonumber(idStr), vid)
+        end
+      end
+    end
+    FinishSync()
+
+  else
+    -- Full sync: fetch all recipes and process them.
+    local recipeIds = C_TradeSkillUI_GetAllRecipeIDs()
+    if not recipeIds then return false end
+
+    if onComplete then
+      -- Spread across frames to avoid FPS drops.
+      syncSpreadState = {
+        recipeIds = recipeIds,
+        recipeIndex = 0,
+        processRecipe = ResolveVariantAndProcess,
+        finishSync = FinishSync,
+      }
+      syncSpreadFrame:SetScript("OnUpdate", SyncSpreadOnUpdate)
+    else
+      -- Synchronous (used by silent open and other paths that need immediate results).
+      for _, recipeId in pairs(recipeIds) do
+        ResolveVariantAndProcess(recipeId)
+      end
+      FinishSync()
+    end
   end
 
   return true
@@ -292,9 +513,12 @@ end
 -- If the backend is not ready (frame closed or different profession loaded),
 -- queue it as pending so the user can trigger sync later.
 local function SyncOrAddPending(baseSkillLineId)
-  if SyncBaseProfession(baseSkillLineId) then
+  -- print("SyncOrAddPending", baseSkillLineId)
+  -- SyncBaseProfession returns true if it started (may complete async via the callback);
+  -- false if the backend isn't active, in which case we queue for later.
+  if not SyncBaseProfession(baseSkillLineId, nil, function()
     CompletePendingSync(baseSkillLineId)
-  else
+  end) then
     AddPendingBaseProfession(baseSkillLineId)
   end
 end
@@ -304,6 +528,10 @@ end
 -- Closes the invisible profession frame (if we opened it), resets the silent-open state,
 -- and notifies the user about any remaining pending professions.
 local function FinishSilentOpen()
+  -- Cancel any in-progress async sync spread so its callback doesn't fire
+  -- after silentOpenProfessionId has been cleared.
+  CancelSyncSpread()
+
   if silentOpenRetryTicker then
     silentOpenRetryTicker:Cancel()
     silentOpenRetryTicker = nil
@@ -386,37 +614,66 @@ end
 
 
 -- Debounced handler for both CONSOLE_MESSAGE (skill-ups) and NEW_RECIPE_LEARNED.
--- Both events mark their variant in WNTR_pendingCharacterSync before the timer fires;
--- this function collects unique base IDs and does one SyncOrAddPending per base.
+-- Both events mark their variant directly in WNTR_pendingCharacterSync; this
+-- function collects the pending variants per base profession and syncs only those
+-- (not every variant of the base), falling back to AddPendingBaseProfession if the
+-- backend is not active.
 local function ProcessPendingChanges()
+
+  -- print("ProcessPendingChanges")
 
   local realmName  = GetRealmName()
   local playerName = UnitName("player")
 
-  -- Transfer pending new recipes into the persistent pending table.
   WNTR_pendingCharacterSync[realmName] = WNTR_pendingCharacterSync[realmName] or {}
   WNTR_pendingCharacterSync[realmName][playerName] = WNTR_pendingCharacterSync[realmName][playerName] or {}
-  for recipeId, variantSkillLineId in pairs(pendingNewRecipes) do
-    WNTR_pendingCharacterSync[realmName][playerName][variantSkillLineId] = true
-  end
-  wipe(pendingNewRecipes)
 
-  -- Sync immediately if the profession backend is active, otherwise queue as pending.
-  -- Collect unique base IDs first to avoid syncing the same base profession multiple times.
-  local baseIdsToSync = {}
+  -- Collect pending variants per base profession.
+  -- Skip variants whose base has an armed TRADE_SKILL_LIST_UPDATE full sync
+  -- (pendingFullSyncBase): that full sync will cover them, so syncing them
+  -- here would just duplicate work. The variants stay in WNTR_pendingCharacterSync
+  -- and SyncBaseProfession's FinishSync clears them when the full sync completes.
+  local baseToVariants = {}
   for variantSkillLineId in pairs(WNTR_pendingCharacterSync[realmName][playerName]) do
     local baseSkillLineId = GetBaseOfVariant(variantSkillLineId)
-    if baseSkillLineId then
-      baseIdsToSync[baseSkillLineId] = true
+    if baseSkillLineId and baseSkillLineId ~= pendingFullSyncBase then
+      baseToVariants[baseSkillLineId] = baseToVariants[baseSkillLineId] or {}
+      baseToVariants[baseSkillLineId][variantSkillLineId] = true
     end
   end
-  for baseSkillLineId in pairs(baseIdsToSync) do
-    SyncOrAddPending(baseSkillLineId)
+
+  -- Sync only the pending variants (not all variants of each base profession).
+  -- Don't call CompletePendingSync here - a variant-specific sync may not cover
+  -- all pending work for the base (e.g. global sync of other variants after a
+  -- build change). The full TRADE_SKILL_LIST_UPDATE path handles that.
+  local anySynced = false
+  for baseSkillLineId, variantFilter in pairs(baseToVariants) do
+    if silentOpenProfessionId == baseSkillLineId then
+      -- A silent open of this base is already in progress and will fully sync
+      -- all variants (clearing them from WNTR_pendingCharacterSync in FinishSync).
+      -- Calling SyncBaseProfession here would pass the readiness check and then
+      -- CancelSyncSpread the silent's in-progress spread, leaving the silent's
+      -- callback chain (CompletePendingSync + FinishSilentOpen) un-fired.
+    elseif SyncBaseProfession(baseSkillLineId, variantFilter) then
+      anySynced = true
+    else
+      AddPendingBaseProfession(baseSkillLineId)
+    end
+  end
+  if anySynced then
+    addon.InvalidateReagentCache()
   end
 
 end
 
-local function ScheduleProcessPendingChanges()
+local function ScheduleProcessPendingChanges(variantSkillLineId)
+  -- If a TRADE_SKILL_LIST_UPDATE-triggered full sync is already armed for this
+  -- variant's base profession, skip - that full sync will cover this variant too,
+  -- so scheduling a variant-specific sync on top of it would just duplicate work.
+  if variantSkillLineId and pendingFullSyncBase
+      and GetBaseOfVariant(variantSkillLineId) == pendingFullSyncBase then
+    return
+  end
   if pendingChangesTimer then
     pendingChangesTimer:Cancel()
   end
@@ -430,9 +687,9 @@ end
 
 -- Check which professions need syncing, queue them as pending,
 -- and remove stored data for professions the character no longer has.
--- Skill level change detection is NOT done here — that is handled by the
+-- Skill level change detection is NOT done here - that is handled by the
 -- CONSOLE_MESSAGE event ("Skill <id> increased from X to Y"), which marks
--- the affected variant as pending and schedules ProcessPendingChanges().
+-- the affected variant as pending and calls ScheduleProcessPendingChanges().
 local function UpdateProfessions()
 
   local realmName  = GetRealmName()
@@ -451,7 +708,7 @@ local function UpdateProfessions()
 
   -- Do NOT wipe pendingBaseSkillLineIds here. Other events (CONSOLE_MESSAGE, ProcessPendingChanges)
   -- may have correctly added entries before UpdateProfessions runs. Wiping would undo that work, because
-  -- UpdateProfessions can only reconstruct entries from WNTR_pendingCharacterSync — which does not capture
+  -- UpdateProfessions can only reconstruct entries from WNTR_pendingCharacterSync - which does not capture
   -- newly learned variants whose IDs are not yet stored there.
   -- Stale entries for dropped professions are removed explicitly in the cleanup section below.
 
@@ -538,29 +795,6 @@ end
 
 
 
--- Spread re-checking of uncollected transmog recipes across frames to avoid FPS drops.
--- Only recipes currently in WNTR_recipeWithUncollectedTransmog need re-checking,
--- because only those can transition from "uncollected" to "collected".
--- We snapshot the keys into an array first, because UpdateUncollectedTransmog may
--- remove keys from the table (invalidating next()-based iteration in Lua 5.1).
-local TRANSMOG_RECIPES_PER_FRAME = 20
-local transmogRefreshList = {}
-local transmogRefreshIndex = 0
-local transmogRefreshFrame = CreateFrame("Frame")
-
-local function TransmogRefreshOnUpdate()
-  for _ = 1, TRANSMOG_RECIPES_PER_FRAME do
-    transmogRefreshIndex = transmogRefreshIndex + 1
-    if transmogRefreshIndex > #transmogRefreshList then
-      transmogRefreshFrame:SetScript("OnUpdate", nil)
-      addon.RefreshProfessionRecipeList()
-      return
-    end
-    UpdateUncollectedTransmog(transmogRefreshList[transmogRefreshIndex])
-  end
-end
-
-
 local function EventFrameFunction(self, event, ...)
 
   -- #########################################################################
@@ -620,6 +854,7 @@ local function EventFrameFunction(self, event, ...)
   -- #########################################################################
   -- This event fires both for normal opens and for our silent opens of the profession frame.
   elseif event == "TRADE_SKILL_LIST_UPDATE" then
+    -- print("TRADE_SKILL_LIST_UPDATE")
 
     -- Silent open flow: profession UI was opened by us.
     if silentOpenProfessionId then
@@ -633,14 +868,16 @@ local function EventFrameFunction(self, event, ...)
         -- GetBaseProfessionInfo() may already return our requested professionID while
         -- GetProfessionChildSkillLineID() still returns 0 (backend not fully loaded).
         -- SyncBaseProfession checks both conditions; if not ready, we retry below.
-        if SyncBaseProfession(silentOpenProfessionId) then
+        local silentSyncCallback = function()
           CompletePendingSync(silentOpenProfessionId)
           FinishSilentOpen()
+        end
 
         -- Backend was not fully ready yet. If the ticker does not exist yet, we start it.
         -- Keep the invisible frame open and retry every 0.2s for up to 2 seconds,
         -- giving the backend time to finish loading the profession variant data.
-        elseif not silentOpenRetryTicker then
+        if not SyncBaseProfession(silentOpenProfessionId, nil, silentSyncCallback) and not silentOpenRetryTicker then
+          -- print("WNTR DEBUG: Backend was not ready. Starting ticker.")
 
           silentOpenRetryCount = 0
           silentOpenRetryTicker = C_Timer_NewTicker(0.2, function()
@@ -648,15 +885,14 @@ local function EventFrameFunction(self, event, ...)
 
             -- print("WNTR DEBUG: Retrying sync of", silentOpenProfessionId)
 
-            local retrySuccess = SyncBaseProfession(silentOpenProfessionId)
-
-            if retrySuccess or silentOpenRetryCount >= 10 then
-              if retrySuccess then
-                CompletePendingSync(silentOpenProfessionId)
-              else
-                if WNTR_config.showStatusMessages then
-                  print("|cff00ccffWhoNeedsThisReagent:|r Synchronization timed out. Professions backend did not respond within 2 seconds.")
-                end
+            if SyncBaseProfession(silentOpenProfessionId, nil, silentSyncCallback) then
+              -- Sync started; callback handles CompletePendingSync + FinishSilentOpen.
+              -- Cancel ticker; FinishSilentOpen in the callback is a safe double-cancel.
+              silentOpenRetryTicker:Cancel()
+              silentOpenRetryTicker = nil
+            elseif silentOpenRetryCount >= 10 then
+              if WNTR_config.showStatusMessages then
+                print("|cff00ccffWhoNeedsThisReagent:|r Synchronization timed out. Professions backend did not respond within 2 seconds.")
               end
               FinishSilentOpen()
             end
@@ -673,38 +909,67 @@ local function EventFrameFunction(self, event, ...)
 
 
     -- Normal (non-silent) flow: profession UI was opened by the user.
-    -- When changing the active profession (by opening the profession frame),
-    -- we always sync the character-specific data of all variants (pending or not),
-    -- because the cost of syncing already up-to-date variants is negligible
-    -- compared to opening the profession backend.
+    -- Sync is spread across frames to avoid FPS drops (e.g. selling items
+    -- or completing a crafting item triggers TRADE_SKILL_LIST_UPDATE with
+    -- the profession frame open). Completing a craft also fires the event
+    -- several times back-to-back, so debounce before kicking off the sync.
     else
 
-      -- Check that the desired profession is now active.
-      local activeProfessionInfo = C_TradeSkillUI_GetBaseProfessionInfo()
-      local activeBaseSkillLineId = activeProfessionInfo and activeProfessionInfo.professionID
+      -- Gate: skip if this open-UI session already produced a successful sync.
+      -- TRADE_SKILL_CLOSE / TRADE_SKILL_DATA_SOURCE_CHANGED clear the flag.
+      if syncedSinceShow then return end
 
-      if activeBaseSkillLineId and SyncBaseProfession(activeBaseSkillLineId) then
-        -- Refresh the profession frame's recipe list so transmog icons reflect
-        -- the just-updated transmog tables (our hook may have run before the sync).
-        addon.RefreshProfessionRecipeList()
+      -- Capture the active base at arm-time so ScheduleProcessPendingChanges
+      -- can recognise that a pending variant of this base will be covered, and
+      -- so ProcessPendingChanges can skip its variants at fire time when an
+      -- earlier-armed pendingChangesTimer would otherwise double-sync them.
+      -- WNTR_pendingCharacterSync is not pre-cleared here: SyncBaseProfession's
+      -- FinishSync clears it on success, and leaving entries in place keeps them
+      -- recoverable if the profession UI closes during the debounce.
+      local armingProfessionInfo = C_TradeSkillUI_GetBaseProfessionInfo()
+      pendingFullSyncBase = armingProfessionInfo and armingProfessionInfo.professionID or nil
 
-        -- Check if this profession was pending; if so, complete it with messaging.
-        local wasPending = false
-        for _, pendingBaseSkillLineId in ipairs(pendingBaseSkillLineIds) do
-          if pendingBaseSkillLineId == activeBaseSkillLineId then
-            wasPending = true
-            break
-          end
-        end
-        if wasPending then
-          CompletePendingSync(activeBaseSkillLineId)
-          if #pendingBaseSkillLineIds > 0 then
-            PrintPendingSyncLink()
-          elseif WNTR_config.showStatusMessages then
-            print("|cff00ccffWhoNeedsThisReagent:|r All professions are now synced.")
-          end
-        end
+      if tradeSkillListUpdateTimer then
+        tradeSkillListUpdateTimer:Cancel()
       end
+      tradeSkillListUpdateTimer = C_Timer_NewTimer(0.5, function()
+        -- print("tradeSkillListUpdateTimer firing")
+
+        tradeSkillListUpdateTimer = nil
+        pendingFullSyncBase = nil
+
+        -- Re-check at fire time; the active profession may have changed during the debounce.
+        local activeProfessionInfo = C_TradeSkillUI_GetBaseProfessionInfo()
+        local activeBaseSkillLineId = activeProfessionInfo and activeProfessionInfo.professionID
+
+        if activeBaseSkillLineId then
+          if SyncBaseProfession(activeBaseSkillLineId, nil, function()
+            -- Transmog updates are deferred to a frame-spread inside SyncBaseProfession;
+            -- RefreshProfessionRecipeList is called automatically when the spread completes.
+
+            -- Check if this profession was pending; if so, complete it with messaging.
+            local wasPending = false
+            for _, pendingBaseSkillLineId in ipairs(pendingBaseSkillLineIds) do
+              if pendingBaseSkillLineId == activeBaseSkillLineId then
+                wasPending = true
+                break
+              end
+            end
+            if wasPending then
+              CompletePendingSync(activeBaseSkillLineId)
+              if #pendingBaseSkillLineIds > 0 then
+                PrintPendingSyncLink()
+              elseif WNTR_config.showStatusMessages then
+                print("|cff00ccffWhoNeedsThisReagent:|r All professions are now synced.")
+              end
+            end
+          end) then
+            -- Sync actually started (backend ready); gate further TRADE_SKILL_LIST_UPDATE
+            -- events in this open-UI session.
+            syncedSinceShow = true
+          end
+        end
+      end)
 
     end
 
@@ -713,14 +978,49 @@ local function EventFrameFunction(self, event, ...)
   -- #########################################################################
   -- The game emits locale-independent console messages like "Skill 2568 increased from 0 to 1"
   -- whenever a profession variant's skill level changes. This covers two cases:
-  --   1) A skill level-up (e.g. "from 50 to 51") — marks the variant for character sync.
-  --   2) A newly learned variant (e.g. "from 0 to 1") — also caught here, even when
+  --   1) A skill level-up (e.g. "from 50 to 51") - marks the variant for character sync.
+  --   2) A newly learned variant (e.g. "from 0 to 1") - also caught here, even when
   --      LEARNED_SPELL_IN_SKILL_LINE does not fire (e.g. Pandaria Mining).
   elseif event == "CONSOLE_MESSAGE" then
     local messageText = ...
-    local variantSkillLineId = string_match(messageText, "^Skill (%d+) increased from")
+    local variantSkillLineId, oldSkillLevel, newSkillLevel =
+        string_match(messageText, "^Skill (%d+) increased from (%d+) to (%d+)")
     if variantSkillLineId then
+      -- print("CONSOLE_MESSAGE", messageText)
+
       variantSkillLineId = tonumber(variantSkillLineId)
+      oldSkillLevel     = tonumber(oldSkillLevel)
+      newSkillLevel     = tonumber(newSkillLevel)
+
+      -- Reject variants whose base profession is not one we care about (fishing,
+      -- archaeology): they have no recipes with reagents, so syncing them would
+      -- produce nothing useful and clutter the pending-sync notification. The
+      -- "what we care about" policy lives in CharacterHasBaseProfession (prof1,
+      -- prof2, cooking).
+      local variantBaseId = GetBaseOfVariant(variantSkillLineId)
+      if not variantBaseId or not CharacterHasBaseProfession(variantBaseId) then
+        return
+      end
+
+      -- Gathering professions are ignored by default (no reagent-consuming recipes).
+      -- The only exception is the smelting recipes on pre-WoD Mining variants - for
+      -- those, mark pending only when the new skill level crossed a configured
+      -- threshold (a recipe's relativeDifficulty actually changed). Crafting
+      -- professions are not in gatheringBaseProfessionIds, so they fall through
+      -- and always mark pending as before.
+      if gatheringBaseProfessionIds[variantBaseId] then
+        local thresholds = gatheringSkillThresholds[variantSkillLineId]
+        if not thresholds then return end
+        local crossed = false
+        for _, threshold in ipairs(thresholds) do
+          if oldSkillLevel < threshold and threshold <= newSkillLevel then
+            crossed = true
+            break
+          end
+        end
+        if not crossed then return end
+      end
+
       local realmName  = GetRealmName()
       local playerName = UnitName("player")
 
@@ -731,7 +1031,9 @@ local function EventFrameFunction(self, event, ...)
 
       -- Debounce: a craft can trigger both a skill-up and a NEW_RECIPE_LEARNED
       -- almost simultaneously; the shared timer batches them into one sync.
-      ScheduleProcessPendingChanges()
+      -- Pass the variant so the scheduler can skip if a TRADE_SKILL_LIST_UPDATE
+      -- full-sync for this base is already armed.
+      ScheduleProcessPendingChanges(variantSkillLineId)
     end
 
 
@@ -786,30 +1088,69 @@ local function EventFrameFunction(self, event, ...)
     end
     -- print("NEW_RECIPE_LEARNED", recipeId, variantSkillLineId)
 
+    -- Mark variant as pending character sync, just like CONSOLE_MESSAGE does.
     -- If variantSkillLineId is nil (recipe not yet in the mapping because no global sync has run yet),
-    -- the entry below is a Lua no-op, but the profession is already pending a full sync which will cover this recipe.
-    pendingNewRecipes[recipeId] = variantSkillLineId
+    -- the profession is already pending a full sync which will cover this recipe.
+    if variantSkillLineId then
+      -- Reject variants whose base profession is not one we care about (fishing,
+      -- archaeology); see the matching guard in the CONSOLE_MESSAGE handler.
+      local variantBaseId = GetBaseOfVariant(variantSkillLineId)
+      if not variantBaseId or not CharacterHasBaseProfession(variantBaseId) then
+        return
+      end
+
+      -- Gathering professions are ignored by default; the only exception is
+      -- variants listed in gatheringSkillThresholds (Mining smelting). For
+      -- NEW_RECIPE_LEARNED there's no skill level to threshold-check against,
+      -- so listed-variant means "always mark pending."
+      if gatheringBaseProfessionIds[variantBaseId]
+          and not gatheringSkillThresholds[variantSkillLineId] then
+        return
+      end
+
+      local realmName  = GetRealmName()
+      local playerName = UnitName("player")
+      WNTR_pendingCharacterSync[realmName] = WNTR_pendingCharacterSync[realmName] or {}
+      WNTR_pendingCharacterSync[realmName][playerName] = WNTR_pendingCharacterSync[realmName][playerName] or {}
+      WNTR_pendingCharacterSync[realmName][playerName][variantSkillLineId] = true
+    end
 
     -- Debounce: learning a new profession fires many recipe events at once;
     -- the shared timer batches them (and any concurrent skill-ups) into one sync.
-    ScheduleProcessPendingChanges()
+    -- Pass the variant so the scheduler can skip if a TRADE_SKILL_LIST_UPDATE
+    -- full-sync for this base is already armed.
+    ScheduleProcessPendingChanges(variantSkillLineId)
 
 
   -- #########################################################################
   -- A transmog appearance was collected. Re-check all recipes that were previously
   -- flagged as uncollected, spread across frames to avoid FPS drops.
   elseif event == "TRANSMOG_COLLECTION_SOURCE_ADDED" then
-    wipe(transmogRefreshList)
     -- Re-check both tables: an "unknown" recipe could become "item" or clear entirely,
     -- and an "item" recipe could clear if this specific source was collected.
+    local recipeIds = {}
     for recipeId in pairs(WNTR_recipeWithUncollectedTransmog) do
-      tinsert(transmogRefreshList, recipeId)
+      tinsert(recipeIds, recipeId)
     end
     for recipeId in pairs(WNTR_recipeWithUncollectedTransmogItem) do
-      tinsert(transmogRefreshList, recipeId)
+      tinsert(recipeIds, recipeId)
     end
-    transmogRefreshIndex = 0
-    transmogRefreshFrame:SetScript("OnUpdate", TransmogRefreshOnUpdate)
+    QueueTransmogRefresh(recipeIds)
+
+
+  -- #########################################################################
+  -- The profession UI closed; allow the next TRADE_SKILL_LIST_UPDATE in a future
+  -- open-UI session to run a sync again.
+  elseif event == "TRADE_SKILL_CLOSE" then
+    syncedSinceShow = false
+
+
+  -- #########################################################################
+  -- The user switched between profession data sources inside the open UI (e.g.
+  -- selecting their second profession). The active base has changed, so allow
+  -- the next TRADE_SKILL_LIST_UPDATE to sync the newly-shown profession.
+  elseif event == "TRADE_SKILL_DATA_SOURCE_CHANGED" then
+    syncedSinceShow = false
   end
 end
 
@@ -818,7 +1159,9 @@ eventFrame:SetScript("OnEvent", EventFrameFunction)
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("TRADE_SKILL_SHOW")
+eventFrame:RegisterEvent("TRADE_SKILL_CLOSE")
 eventFrame:RegisterEvent("TRADE_SKILL_LIST_UPDATE")
+eventFrame:RegisterEvent("TRADE_SKILL_DATA_SOURCE_CHANGED")
 eventFrame:RegisterEvent("CONSOLE_MESSAGE")
 eventFrame:RegisterEvent("NEW_RECIPE_LEARNED")
 eventFrame:RegisterEvent("TRANSMOG_COLLECTION_SOURCE_ADDED")

@@ -11,6 +11,7 @@ local PlaySound                                  = _G.PlaySound
 local StopSound                                  = _G.StopSound
 
 local sort                                       = _G.sort
+local string_find                                = _G.string.find
 local string_gmatch                              = _G.string.gmatch
 local tinsert                                    = _G.tinsert
 local wipe                                       = _G.wipe
@@ -27,6 +28,12 @@ function addon.StopLastSound()
   end
 end
 
+-- True if the character has the given base profession AND it is a profession the
+-- addon cares about. This is the single source of truth for the latter policy:
+-- the destructure deliberately discards the 3rd and 4th GetProfessions() return
+-- values (archaeology and fishing) because those don't have recipes that consume
+-- reagents, so syncing them would produce nothing useful. CONSOLE_MESSAGE and
+-- NEW_RECIPE_LEARNED use this function as their gating filter.
 function addon.CharacterHasBaseProfession(requestedBaseSkillLineId)
   local spellTabIndexProf1, spellTabIndexProf2, _, _, spellTabIndexCooking = GetProfessions()
   for _, spellTabIndex in ipairs({spellTabIndexProf1, spellTabIndexProf2, spellTabIndexCooking}) do
@@ -52,18 +59,22 @@ function addon.AddReagentsForRecipe(recipeId, variantSkillLineId)
   -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.GetRecipeSchematic
   local schematic = C_TradeSkillUI_GetRecipeSchematic(recipeId, false)
   if schematic and schematic.reagentSlotSchematics then
+    local recipeStr = tostring(recipeId)
     for _, reagentSlot in pairs(schematic.reagentSlotSchematics) do
       if reagentSlot.reagents then
         for _, reagent in pairs(reagentSlot.reagents) do
           -- Some reagents are currencies (reagent.currencyID) rather than items; skip those.
           if reagent.itemID then
             -- Add reagent to recipe mapping (colon-delimited string of recipeIds).
+            -- Skip if the recipeId is already present: the same itemID can appear in
+            -- multiple reagent slots of one recipe, and global resyncs append onto
+            -- the previously-stored entry rather than rebuilding it.
             WNTR_reagentToRecipe[variantSkillLineId] = WNTR_reagentToRecipe[variantSkillLineId] or {}
             local existing = WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID]
-            if existing then
-              WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = existing .. ":" .. recipeId
-            else
-              WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = tostring(recipeId)
+            if not existing then
+              WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = recipeStr
+            elseif not string_find(":" .. existing .. ":", ":" .. recipeStr .. ":", 1, true) then
+              WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = existing .. ":" .. recipeStr
             end
           end
         end

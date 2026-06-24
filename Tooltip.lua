@@ -273,7 +273,7 @@ local function ShowSecondTooltip()
     return
   end
 
-  -- Collect lines to display (zero table allocations — all records from pool).
+  -- Collect lines to display (zero table allocations - all records from pool).
   wipe(collectedLines)
   ResetLinePool()
   local hasLines = false
@@ -345,7 +345,7 @@ local function ShowSecondTooltip()
                     skipRecipe = true
                   end
                 end
-                -- If there is no previousRecipeID, this is rank 1 — always show it.
+                -- If there is no previousRecipeID, this is rank 1 - always show it.
               else
                 -- Shadowlands style: ranks assigned by name via WNTR_recipeToRank.
                 -- Find the highest learned rank for recipes with the same name.

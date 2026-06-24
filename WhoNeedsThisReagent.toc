@@ -1,4 +1,4 @@
-## Interface: 120001
+﻿## Interface: 120007
 ## Version: @project-version@
 ## Title: WhoNeedsThisReagent
 ## IconAtlas: Reagents

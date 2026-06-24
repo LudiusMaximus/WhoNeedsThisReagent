@@ -26,7 +26,7 @@ local function HookRecipeListInit()
     -- Shift SkillUps right to make room for our icon.
     -- Label is anchored to SkillUps:RIGHT, so it follows automatically.
     -- Use an absolute position rather than incrementing, because the original Init
-    -- only resets the position when SkillUps is shown — so an increment would
+    -- only resets the position when SkillUps is shown - so an increment would
     -- accumulate on recycled frames.
     -- Original Blizzard position: LEFT, self, LEFT, -9, yOfs (yOfs is 0 or 1).
     local _, _, _, _, yOfs = self.SkillUps:GetPoint(1)
@@ -34,7 +34,7 @@ local function HookRecipeListInit()
     self.SkillUps:SetPoint("LEFT", self, "LEFT", -9 + 9, yOfs or 0)
 
     -- All ranks of a recipe produce the same item appearance, so a direct
-    -- lookup by recipeID is sufficient — no chain walk needed.
+    -- lookup by recipeID is sufficient - no chain walk needed.
     local recipeId = node:GetData().recipeInfo.recipeID
     if not recipeId then
       if self.WNTRTransmogIcon then self.WNTRTransmogIcon:Hide() end

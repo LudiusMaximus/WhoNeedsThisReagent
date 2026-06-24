@@ -51,13 +51,13 @@ WNTR_professionSkillLineToIcon = WNTR_professionSkillLineToIcon or {}
 -- WNTR_variantToBaseProfession[variantSkillLineId] = baseId.
 -- C_TradeSkillUI.GetChildProfessionInfos() only works for the active profession backend,
 -- so we persist this mapping to resolve variant/base relationships at any time.
--- Populated by SyncVariantProfession().
+-- Populated by SyncBaseProfession() and lazily by GetBaseOfVariant() in Sync.lua.
 WNTR_variantToBaseProfession = WNTR_variantToBaseProfession or {}
 
 -- WNTR_variantToRecipes[variantSkillLineId] = "recipeId:recipeId:..." (colon-delimited string).
--- Inverted mapping built during SyncVariantProfession() while the backend is active
--- and IsRecipeInSkillLine() is trustworthy. Entries are overwritten (not wiped) on
--- global sync, so data from other characters is preserved.
+-- Inverted mapping built during SyncBaseProfession() while the backend is active
+-- and IsRecipeInSkillLine() is trustworthy. Entries are appended (deduped, never wiped)
+-- on global sync, so data from other characters is preserved.
 WNTR_variantToRecipes = WNTR_variantToRecipes or {}
 
 
@@ -89,19 +89,47 @@ WNTR_pendingCharacterSync = WNTR_pendingCharacterSync or {}
 --   (e.g. Kul Tiran Alchemy, Shadowlands Alchemy). Both are TradeSkillLineIDs.
 --   In this code: "baseId" / "baseProfessionId" = base, "variantId" = expansion variant.
 --
--- Data flow:
+-- Event handlers (all in Sync.lua):
+--
 --   PLAYER_LOGIN fires once on login.
 --     -> UpdateProfessions() picks up any pending syncs from a previous session (persisted
 --        in WNTR_pendingCharacterSync) and cleans up data for dropped professions.
---   CONSOLE_MESSAGE and NEW_RECIPE_LEARNED share a debounced handler
---   (ProcessPendingChanges). A craft can trigger both a skill-up and a new recipe
---   almost simultaneously; the 0.5s timer batches them into one SyncOrAddPending
---   call per affected base profession (syncs immediately if the backend is active,
---   otherwise queues as pending). CONSOLE_MESSAGE also catches newly learned
---   variants (from 0 to 1), even when LEARNED_SPELL_IN_SKILL_LINE does not fire.
---   TRADE_SKILL_LIST_UPDATE fires when a profession window opens.
---     -> SyncBaseProfession() rebuilds global data (reagents, ranks) if pendingGlobalSync
---        says so, and always rebuilds character-specific data (difficulty, skill levels).
+--
+--   CONSOLE_MESSAGE catches "Skill <id> increased from X to Y" messages. This covers
+--   both skill-ups for existing variants and newly learned variants (from 0 to 1),
+--   even when LEARNED_SPELL_IN_SKILL_LINE does not fire (e.g. Pandaria Mining).
+--   NEW_RECIPE_LEARNED fires when a recipe is added to the spellbook.
+--     -> Both filter against CharacterHasBaseProfession (fishing / archaeology are
+--        rejected outright) and against gatheringBaseProfessionIds (the three
+--        gathering professions are ignored unless the variant is listed in
+--        gatheringSkillThresholds and the skill-up crossed a configured threshold).
+--     -> Surviving events mark their variant in WNTR_pendingCharacterSync and call
+--        ScheduleProcessPendingChanges(). A shared 0.5s debounce coalesces bursts
+--        (a single craft can fire both events). ProcessPendingChanges() then groups
+--        pending variants by base and runs SyncBaseProfession(base, variantFilter)
+--        per base; if the backend isn't active, it falls back to AddPendingBaseProfession
+--        which surfaces a "click minimap to sync" notification.
+--
+--   TRADE_SKILL_SHOW fires when the profession frame opens. Only handled for the
+--   silent-open flow (SyncPendingProfession), where it manages the invisibility safeguard.
+--
+--   TRADE_SKILL_LIST_UPDATE fires when the recipe list updates: on profession-frame
+--   open, after each craft, and after profession switches inside the frame.
+--     -> Silent-open path: drives the silent SyncBaseProfession and its retry ticker.
+--     -> Normal path: gated by syncedSinceShow so only the first event in an
+--        open-UI session triggers a sync. Subsequent fires (from crafting) are
+--        skipped; their effects are caught by CONSOLE_MESSAGE / NEW_RECIPE_LEARNED.
+--        Also 0.5s-debounced to coalesce the burst that crafts produce.
+--        TRADE_SKILL_CLOSE and TRADE_SKILL_DATA_SOURCE_CHANGED clear the gate so
+--        the next session (or a profession switch inside the frame) re-syncs.
+--
+--   Cross-event dedup:
+--     When TRADE_SKILL_LIST_UPDATE arms its timer it records pendingFullSyncBase.
+--     ScheduleProcessPendingChanges skips arming when the variant's base matches,
+--     and ProcessPendingChanges skips matching variants at fire time, so the two
+--     timer paths can never both sync the same base in one craft.
+--
+--   TRANSMOG_COLLECTION_SOURCE_ADDED re-checks flagged recipes via a frame-spread.
 --
 -- Pending sync (two tiers, both persisted as saved variables):
 --   WNTR_pendingGlobalSync[variantSkillLineId] = true
@@ -111,11 +139,12 @@ WNTR_pendingCharacterSync = WNTR_pendingCharacterSync or {}
 --     Character's difficulty/skill data needs refreshing. Only that character can fulfill.
 --
 -- File layout:
---   main.lua          – Saved variables, namespace setup, architecture docs.
---   Helpers.lua       – Utility functions (sound, data mutation, recipe rank/reagent helpers).
---   MinimapButton.lua – LibDataBroker/LibDBIcon minimap icon with pulsating glow.
---   Sync.lua          – Profession syncing engine, event handling, pending-sync management.
---   Tooltip.lua       – Custom multi-column "Who needs this reagent?" tooltip.
+--   main.lua            - Saved variables, namespace setup, architecture docs.
+--   Helpers.lua         - Utility functions (sound, data mutation, recipe rank/reagent helpers).
+--   MinimapButton.lua   - LibDataBroker/LibDBIcon minimap icon with pulsating glow.
+--   Sync.lua            - Profession syncing engine, event handling, pending-sync management.
+--   Tooltip.lua         - Custom multi-column "Who needs this reagent?" tooltip.
+--   ProfessionFrame.lua - Hook on the profession recipe list to show transmog icons.
 --
 -- References:
 --   https://warcraft.wiki.gg/wiki/API_GetProfessions

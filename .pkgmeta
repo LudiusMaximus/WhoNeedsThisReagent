@@ -1,4 +1,4 @@
-package-as: LudiusPlus
+package-as: WhoNeedsThisReagent
 
 externals:
     Libs/LibStub:
@@ -6,8 +6,6 @@ externals:
     Libs/CallbackHandler-1.0:
         url: https://repos.wowace.com/wow/callbackhandler/trunk/CallbackHandler-1.0
     Libs/LibDataBroker-1.1:
-        url: https://repos.wowace.com/wow/libdatabroker-1-1/trunk/LibDataBroker-1.1
-
-    # Libraries
+        url: https://repos.curseforge.com/wow/libdbicon-1-0/trunk/LibDataBroker-1.1/
     Libs/LibDBIcon-1.0:
         url: https://repos.curseforge.com/wow/libdbicon-1-0/trunk/LibDBIcon-1.0
