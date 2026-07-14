@@ -59,8 +59,6 @@ local GetProfessions                                = _G.GetProfessions
 local GetRealmName                                  = _G.GetRealmName
 local UnitName                                      = _G.UnitName
 
-local string_find                                   = _G.string.find
-local string_gmatch                                 = _G.string.gmatch
 local string_match                                  = _G.string.match
 local table_remove                                  = _G.table.remove
 local tinsert                                       = _G.tinsert
@@ -70,8 +68,10 @@ local AddOrUpdateCharacterToClass                 = addon.AddOrUpdateCharacterTo
 local AddReagentsForRecipe                        = addon.AddReagentsForRecipe
 local AssignRanksByName                           = addon.AssignRanksByName
 local CharacterHasBaseProfession                  = addon.CharacterHasBaseProfession
+local ColonListContains                           = addon.ColonListContains
 local CorrectShadowlandsRankedRecipeDifficulty    = addon.CorrectShadowlandsRankedRecipeDifficulty
 local GetRecipeRank                               = addon.GetRecipeRank
+local IterColonListIds                            = addon.IterColonListIds
 local UpdateRecipeExperience                      = addon.UpdateRecipeExperience
 local UpdateUncollectedTransmog                   = addon.UpdateUncollectedTransmog
 local StopLastSound                               = addon.StopLastSound
@@ -190,6 +190,15 @@ local transmogRefreshList = {}
 local transmogRefreshIndex = 0
 local transmogRefreshFrame = CreateFrame("Frame")
 
+-- Priority-chunk boundary for the transmog spread. When the queue contains a
+-- "priority" prefix (e.g. recipes belonging to the currently-viewed profession
+-- variant on a TRANSMOG_COLLECTION_SOURCE_* event), transmogPriorityCount holds
+-- its length so the spread can call RefreshProfessionRecipeList as soon as the
+-- prefix finishes, without waiting for the rest of the queue.
+local transmogPriorityCount = 0
+local transmogPriorityRefreshed = false
+
+
 local function TransmogRefreshFunction()
   local start = debugprofilestop()
   while debugprofilestop() - start < SPREAD_BUDGET_MS do
@@ -200,15 +209,28 @@ local function TransmogRefreshFunction()
       return
     end
     UpdateUncollectedTransmog(transmogRefreshList[transmogRefreshIndex])
+    -- End of priority chunk: refresh so the user sees the icons in front of
+    -- them update without waiting for the background portion of the queue.
+    if not transmogPriorityRefreshed
+        and transmogPriorityCount > 0
+        and transmogRefreshIndex >= transmogPriorityCount then
+      transmogPriorityRefreshed = true
+      addon.RefreshProfessionRecipeList()
+    end
   end
 end
 
 -- Append recipe IDs to the transmog refresh queue and start/continue the spread.
-local function QueueTransmogRefresh(recipeIds)
+-- priorityCount (optional) marks the length of a priority prefix at the front
+-- of recipeIds; the spread refreshes the recipe list after that prefix finishes
+-- and again when the whole queue is done. Only honored on a fresh spread.
+local function QueueTransmogRefresh(recipeIds, priorityCount)
   if not transmogRefreshFrame:GetScript("OnUpdate") then
     -- No refresh in progress - reset for a clean run.
     wipe(transmogRefreshList)
     transmogRefreshIndex = 0
+    transmogPriorityCount = priorityCount or 0
+    transmogPriorityRefreshed = false
   end
   for _, recipeId in ipairs(recipeIds) do
     tinsert(transmogRefreshList, recipeId)
@@ -341,11 +363,10 @@ local function SyncBaseProfession(baseSkillLineId, variantFilter, onComplete)
       -- Store the authoritative variant-to-recipes mapping (colon-delimited string).
       -- We append rather than wipe, preserving entries from other characters' professions.
       local existing = WNTR_variantToRecipes[variantSkillLineId]
-      local recipeStr = tostring(recipeId)
       if not existing then
-        WNTR_variantToRecipes[variantSkillLineId] = recipeStr
-      elseif not string_find(":" .. existing .. ":", ":" .. recipeStr .. ":", 1, true) then
-        WNTR_variantToRecipes[variantSkillLineId] = existing .. ":" .. recipeStr
+        WNTR_variantToRecipes[variantSkillLineId] = tostring(recipeId)
+      elseif not ColonListContains(existing, recipeId) then
+        WNTR_variantToRecipes[variantSkillLineId] = existing .. ":" .. recipeId
       end
 
       -- Is this a Legion/BfA ranked recipe?
@@ -359,9 +380,15 @@ local function SyncBaseProfession(baseSkillLineId, variantFilter, onComplete)
       tempDifficulty[variantSkillLineId][recipeId] = recipeInfo.relativeDifficulty
     end
 
-    -- Transmog re-check is only needed during global sync; the list is processed
-    -- as a frame-spread in FinishSync via QueueTransmogRefresh.
-    if anyGlobalSync then
+    -- Transmog re-check queue:
+    --   * During global sync: every recipe (initial "unknown" / "item" detection).
+    --   * During any other sync: only recipes that already have a flag set, so
+    --     narrow syncs stay cheap while still giving previously-flagged recipes
+    --     a chance to correct themselves against the current game state.
+    -- Processed as a frame-spread in FinishSync via QueueTransmogRefresh.
+    if anyGlobalSync
+        or WNTR_recipeWithUncollectedTransmog[recipeId]
+        or WNTR_recipeWithUncollectedTransmogItem[recipeId] then
       tinsert(transmogRecipeIds, recipeId)
     end
 
@@ -439,10 +466,10 @@ local function SyncBaseProfession(baseSkillLineId, variantFilter, onComplete)
       end
     end
 
-    -- Only re-check transmog during global sync (first sync or after build change).
-    -- Transmog state doesn't change from normal gameplay events like selling items;
-    -- TRANSMOG_COLLECTION_SOURCE_ADDED handles the collection case separately.
-    if anyGlobalSync then
+    -- Kick off the transmog frame-spread. Content of transmogRecipeIds is
+    -- decided in ProcessRecipe above: everything on global sync, only
+    -- already-flagged recipes otherwise.
+    if #transmogRecipeIds > 0 then
       QueueTransmogRefresh(transmogRecipeIds)
     end
 
@@ -455,11 +482,8 @@ local function SyncBaseProfession(baseSkillLineId, variantFilter, onComplete)
     -- Character-only sync: iterate only the known recipes for each filtered variant.
     -- Small recipe set (~50), always synchronous.
     for vid in pairs(variantsToSync) do
-      local recipesStr = WNTR_variantToRecipes[vid]
-      if recipesStr then
-        for idStr in string_gmatch(recipesStr, "[^:]+") do
-          ProcessRecipe(tonumber(idStr), vid)
-        end
+      for recipeId in IterColonListIds(WNTR_variantToRecipes[vid]) do
+        ProcessRecipe(recipeId, vid)
       end
     end
     FinishSync()
@@ -1076,10 +1100,9 @@ local function EventFrameFunction(self, event, ...)
         -- API returned a base ID or something unexpected. Scan WNTR_variantToRecipes
         -- for variants of this base profession only.
         local baseId = profInfo.professionID
-        local recipeStr = tostring(recipeId)
         for candidateVariant, recipesStr in pairs(WNTR_variantToRecipes) do
           if WNTR_variantToBaseProfession[candidateVariant] == baseId
-              and string_find(":" .. recipesStr .. ":", ":" .. recipeStr .. ":", 1, true) then
+              and ColonListContains(recipesStr, recipeId) then
             variantSkillLineId = candidateVariant
             break
           end
@@ -1108,6 +1131,18 @@ local function EventFrameFunction(self, event, ...)
         return
       end
 
+      -- If this recipeId isn't yet in our variant mapping (e.g. a newly-unlocked
+      -- higher rank of a Legion/BfA ranked recipe that wasn't returned by the
+      -- earlier global sync's GetAllRecipeIDs), force a global rebuild for this
+      -- variant. Without this, ProcessPendingChanges takes the narrow path,
+      -- which iterates WNTR_variantToRecipes[variantId] and misses the new
+      -- recipe entirely - so its learned/difficulty state never enters
+      -- WNTR_recipeToDifficulty, and the tooltip's "hide lower learned ranks"
+      -- walk finds no higher-rank difficulty to hide the previous rank against.
+      if not ColonListContains(WNTR_variantToRecipes[variantSkillLineId], recipeId) then
+        WNTR_pendingGlobalSync[variantSkillLineId] = true
+      end
+
       local realmName  = GetRealmName()
       local playerName = UnitName("player")
       WNTR_pendingCharacterSync[realmName] = WNTR_pendingCharacterSync[realmName] or {}
@@ -1123,19 +1158,54 @@ local function EventFrameFunction(self, event, ...)
 
 
   -- #########################################################################
-  -- A transmog appearance was collected. Re-check all recipes that were previously
-  -- flagged as uncollected, spread across frames to avoid FPS drops.
-  elseif event == "TRANSMOG_COLLECTION_SOURCE_ADDED" then
-    -- Re-check both tables: an "unknown" recipe could become "item" or clear entirely,
-    -- and an "item" recipe could clear if this specific source was collected.
-    local recipeIds = {}
-    for recipeId in pairs(WNTR_recipeWithUncollectedTransmog) do
-      tinsert(recipeIds, recipeId)
+  -- A transmog appearance source was collected (SOURCE_ADDED) or a previously
+  -- collected source was removed (SOURCE_REMOVED - rare; e.g. vendor refund).
+  -- Re-check every currently-flagged recipe via the frame-spread. Recipes for
+  -- the currently-viewed profession variant go at the front of the queue as a
+  -- "priority prefix" so their icons update as soon as that prefix finishes
+  -- (see QueueTransmogRefresh's priorityCount).
+  --
+  -- Deliberately not filtering by the payload sourceID's visualID: that would
+  -- need a schematic + item-info lookup per flagged recipe, which can stutter
+  -- when the flagged set is large. The spread bounds the cost either way.
+  --
+  -- Not caught: SOURCE_REMOVED can newly-flag a previously-unflagged recipe
+  -- whose exact output item was the removed source. Such a recipe self-
+  -- corrects on the next global sync of its variant.
+  elseif event == "TRANSMOG_COLLECTION_SOURCE_ADDED"
+      or event == "TRANSMOG_COLLECTION_SOURCE_REMOVED" then
+    -- Build the set of recipeIds belonging to the currently-viewed variant.
+    local activeVariantId = C_TradeSkillUI_GetProfessionChildSkillLineID()
+    if activeVariantId == 0 then activeVariantId = nil end
+    local activeVariantRecipes = {}
+    if activeVariantId then
+      for id in IterColonListIds(WNTR_variantToRecipes[activeVariantId]) do
+        activeVariantRecipes[id] = true
+      end
     end
-    for recipeId in pairs(WNTR_recipeWithUncollectedTransmogItem) do
-      tinsert(recipeIds, recipeId)
+
+    local front = {}
+    local back = {}
+    local seen = {}
+    local function enqueue(recipeId)
+      if seen[recipeId] then return end
+      seen[recipeId] = true
+      if activeVariantRecipes[recipeId] then
+        tinsert(front, recipeId)
+      else
+        tinsert(back, recipeId)
+      end
     end
-    QueueTransmogRefresh(recipeIds)
+    for recipeId in pairs(WNTR_recipeWithUncollectedTransmog)     do enqueue(recipeId) end
+    for recipeId in pairs(WNTR_recipeWithUncollectedTransmogItem) do enqueue(recipeId) end
+
+    local priorityCount = #front
+    for _, id in ipairs(back) do
+      tinsert(front, id)
+    end
+    if #front > 0 then
+      QueueTransmogRefresh(front, priorityCount)
+    end
 
 
   -- #########################################################################
@@ -1165,3 +1235,4 @@ eventFrame:RegisterEvent("TRADE_SKILL_DATA_SOURCE_CHANGED")
 eventFrame:RegisterEvent("CONSOLE_MESSAGE")
 eventFrame:RegisterEvent("NEW_RECIPE_LEARNED")
 eventFrame:RegisterEvent("TRANSMOG_COLLECTION_SOURCE_ADDED")
+eventFrame:RegisterEvent("TRANSMOG_COLLECTION_SOURCE_REMOVED")

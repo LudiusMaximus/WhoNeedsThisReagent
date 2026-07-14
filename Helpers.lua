@@ -1,8 +1,7 @@
 local _, addon = ...
 
 -- Cache of global WoW API tables/functions.
-local C_Item_IsItemDataCachedByID                = _G.C_Item.IsItemDataCachedByID
-local C_TooltipInfo_GetItemByID                  = _G.C_TooltipInfo.GetItemByID
+local C_TooltipInfo_GetRecipeResultItem          = _G.C_TooltipInfo.GetRecipeResultItem
 local C_TradeSkillUI_GetRecipeInfo               = _G.C_TradeSkillUI.GetRecipeInfo
 local C_TradeSkillUI_GetRecipeSchematic          = _G.C_TradeSkillUI.GetRecipeSchematic
 local GetProfessionInfo                          = _G.GetProfessionInfo
@@ -54,6 +53,30 @@ function addon.AddOrUpdateCharacterToClass(realmName, playerName, classFilename)
 end
 
 
+-- Colon-separated integer id lists ("id1:id2:id3", no leading/trailing colon)
+-- are the storage format for WNTR_variantToRecipes and the inner values of
+-- WNTR_reagentToRecipe. These two helpers centralise the parse/contain idiom.
+
+-- True if `id` (number or numeric string) is present in the colon-separated
+-- list `str`. Safe on nil `str`.
+function addon.ColonListContains(str, id)
+  if not str then return false end
+  local needle = ":" .. tostring(id) .. ":"
+  return string_find(":" .. str .. ":", needle, 1, true) ~= nil
+end
+
+-- Iterator over the numeric ids in a colon-separated list. Safe on nil `str`
+-- (yields nothing). Usage: `for id in IterColonListIds(str) do ... end`.
+function addon.IterColonListIds(str)
+  if not str then return function() end end
+  local gm = string_gmatch(str, "[^:]+")
+  return function()
+    local s = gm()
+    if s then return tonumber(s) end
+  end
+end
+
+
 
 function addon.AddReagentsForRecipe(recipeId, variantSkillLineId)
   -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.GetRecipeSchematic
@@ -73,7 +96,7 @@ function addon.AddReagentsForRecipe(recipeId, variantSkillLineId)
             local existing = WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID]
             if not existing then
               WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = recipeStr
-            elseif not string_find(":" .. existing .. ":", ":" .. recipeStr .. ":", 1, true) then
+            elseif not addon.ColonListContains(existing, recipeId) then
               WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = existing .. ":" .. recipeStr
             end
           end
@@ -87,11 +110,8 @@ end
 function addon.GetRecipesForReagent(variantId, reagentId, result)
   if result then wipe(result) else result = {} end
   if WNTR_reagentToRecipe[variantId] then
-    local str = WNTR_reagentToRecipe[variantId][reagentId]
-    if str then
-      for id in string_gmatch(str, "[^:]+") do
-        tinsert(result, tonumber(id))
-      end
+    for id in addon.IterColonListIds(WNTR_reagentToRecipe[variantId][reagentId]) do
+      tinsert(result, id)
     end
   end
   return result
@@ -212,43 +232,36 @@ end
 
 -- Check whether a recipe produces an item with an uncollected transmog appearance.
 -- C_TransmogCollection.PlayerHasTransmog(itemId) appears to be broken (always returns false),
--- so we inspect the recipe result tooltip instead.
--- Uses schematic.outputItemID instead of the broken C_TooltipInfo.GetRecipeResultItem() API,
--- which returns wrong results for Shadowlands recipes.
+-- so we inspect the recipe result tooltip instead. Uses C_TooltipInfo.GetRecipeResultItem
+-- (the same API Blizzard's ProfessionsFrame.CraftingPage.SchematicForm.OutputIcon uses)
+-- rather than C_TooltipInfo.GetItemByID(outputItemID). For recipes that produce items with
+-- random affixes (e.g. BfA gear like "Tidespray Linen Mittens of the Feverflare"), the base
+-- item ID's own tooltip does not reflect the true transmog collection state - only the
+-- recipe-context tooltip does.
 --
 -- Sets WNTR_recipeWithUncollectedTransmog[recipeId] = true when the appearance is fully unknown.
 -- Sets WNTR_recipeWithUncollectedTransmogItem[recipeId] = true when the appearance is known
 -- but not from this specific item ("You've collected this appearance, but not from this item").
 function addon.UpdateUncollectedTransmog(recipeId)
-  local schematic = C_TradeSkillUI_GetRecipeSchematic(recipeId, false)
-  if not schematic or not schematic.outputItemID then
-    WNTR_recipeWithUncollectedTransmog[recipeId] = nil
-    WNTR_recipeWithUncollectedTransmogItem[recipeId] = nil
+  local tooltipInfo = C_TooltipInfo_GetRecipeResultItem(recipeId)
+  if not (tooltipInfo and tooltipInfo.lines) then
+    -- No tooltip data (e.g. recipe belongs to a profession whose backend is not
+    -- currently loaded). Preserve existing flags rather than clearing them.
     return
   end
 
-  -- If the item data hasn't been cached by the client yet (common right after login),
-  -- the tooltip will be nil or incomplete. In that case, preserve existing saved values
-  -- rather than incorrectly clearing them.
-  if not C_Item_IsItemDataCachedByID(schematic.outputItemID) then
-    return
-  end
-
-  local tooltipInfo = C_TooltipInfo_GetItemByID(schematic.outputItemID)
-  if tooltipInfo and tooltipInfo.lines then
-    -- Search from bottom to top, because the appearance line is typically near the end.
-    for i = #tooltipInfo.lines, 3, -1 do
-      local lineText = tooltipInfo.lines[i].leftText
-      if lineText == TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN then
-        WNTR_recipeWithUncollectedTransmog[recipeId] = true
-        WNTR_recipeWithUncollectedTransmogItem[recipeId] = nil
-        return
-      end
-      if lineText == TRANSMOGRIFY_TOOLTIP_ITEM_UNKNOWN_APPEARANCE_KNOWN then
-        WNTR_recipeWithUncollectedTransmog[recipeId] = nil
-        WNTR_recipeWithUncollectedTransmogItem[recipeId] = true
-        return
-      end
+  -- Search from bottom to top, because the appearance line is typically near the end.
+  for i = #tooltipInfo.lines, 3, -1 do
+    local lineText = tooltipInfo.lines[i].leftText
+    if lineText == TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN then
+      WNTR_recipeWithUncollectedTransmog[recipeId] = true
+      WNTR_recipeWithUncollectedTransmogItem[recipeId] = nil
+      return
+    end
+    if lineText == TRANSMOGRIFY_TOOLTIP_ITEM_UNKNOWN_APPEARANCE_KNOWN then
+      WNTR_recipeWithUncollectedTransmog[recipeId] = nil
+      WNTR_recipeWithUncollectedTransmogItem[recipeId] = true
+      return
     end
   end
 
