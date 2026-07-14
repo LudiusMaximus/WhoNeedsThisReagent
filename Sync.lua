@@ -551,6 +551,18 @@ end
 
 -- Closes the invisible profession frame (if we opened it), resets the silent-open state,
 -- and notifies the user about any remaining pending professions.
+--
+-- NOTE: it is tempting to also restore the base profession the user had open before
+-- SyncPendingProfession switched away from it (e.g. return to Tailoring after silently
+-- syncing Cooking). Do not try - C_TradeSkillUI.OpenTradeSkill is a protected function
+-- that only works inside a hardware-event call stack (mouse click, key press, /run in
+-- chat). By the time this callback fires we are inside the sync spread's OnUpdate, out
+-- of any hardware-event context, and OpenTradeSkill raises ADDON_ACTION_BLOCKED. There
+-- is no Lua-only workaround (SecureActionButton, /click, SetOverrideBindingMacro all
+-- still need a real user input to activate). The only viable alternative would be a
+-- chat hyperlink that prefills the chat with /run OpenTradeSkill(id) for the user to
+-- press Enter on, which is not really "automatic" and gives worse UX than just clicking
+-- the profession in the sidebar.
 local function FinishSilentOpen()
   -- Cancel any in-progress async sync spread so its callback doesn't fire
   -- after silentOpenProfessionId has been cleared.
