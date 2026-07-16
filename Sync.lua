@@ -380,15 +380,16 @@ local function SyncBaseProfession(baseSkillLineId, variantFilter, onComplete)
       tempDifficulty[variantSkillLineId][recipeId] = recipeInfo.relativeDifficulty
     end
 
-    -- Transmog re-check queue:
-    --   * During global sync: every recipe (initial "unknown" / "item" detection).
-    --   * During any other sync: only recipes that already have a flag set, so
-    --     narrow syncs stay cheap while still giving previously-flagged recipes
-    --     a chance to correct themselves against the current game state.
+    -- Transmog re-check queue: only during global sync (initial "unknown" /
+    -- "item" detection for the whole variant). Narrow syncs deliberately do
+    -- NOT feed the transmog spread, because transmog state doesn't change
+    -- from crafting - it changes from collecting appearances, and
+    -- TRANSMOG_COLLECTION_SOURCE_ADDED/REMOVED already re-checks flagged
+    -- recipes when it does. Feeding the transmog spread on every narrow sync
+    -- (every crafting-burst pause) accumulates expensive GetRecipeResultItem
+    -- tooltip parses that cause visible FPS drops during rapid crafting.
     -- Processed as a frame-spread in FinishSync via QueueTransmogRefresh.
-    if anyGlobalSync
-        or WNTR_recipeWithUncollectedTransmog[recipeId]
-        or WNTR_recipeWithUncollectedTransmogItem[recipeId] then
+    if anyGlobalSync then
       tinsert(transmogRecipeIds, recipeId)
     end
 
@@ -466,9 +467,8 @@ local function SyncBaseProfession(baseSkillLineId, variantFilter, onComplete)
       end
     end
 
-    -- Kick off the transmog frame-spread. Content of transmogRecipeIds is
-    -- decided in ProcessRecipe above: everything on global sync, only
-    -- already-flagged recipes otherwise.
+    -- Kick off the transmog frame-spread. Only populated during global sync
+    -- (see the guard in ProcessRecipe above).
     if #transmogRecipeIds > 0 then
       QueueTransmogRefresh(transmogRecipeIds)
     end
