@@ -82,14 +82,25 @@ end
 function addon.AddReagentsForRecipe(recipeId, variantSkillLineId)
   -- https://warcraft.wiki.gg/wiki/API_C_TradeSkillUI.GetRecipeSchematic
   local schematic = C_TradeSkillUI_GetRecipeSchematic(recipeId, false)
-  if schematic and schematic.reagentSlotSchematics then
+  if not schematic then return end
+
+  -- Cache the recipe's output item id (used by the transitive reagent walker
+  -- to follow reagent -> intermediate -> final-product chains).
+  if schematic.outputItemID then
+    WNTR_recipeToOutputItem[recipeId] = schematic.outputItemID
+  end
+
+  if schematic.reagentSlotSchematics then
     local recipeStr = tostring(recipeId)
     for _, reagentSlot in pairs(schematic.reagentSlotSchematics) do
+      -- Enum.CraftingReagentType: Basic=1 (required), Modifying=0, Finishing=2,
+      -- Automatic=3. Anything not Basic is "optional" for our purposes.
+      local isRequired = reagentSlot.reagentType == 1
       if reagentSlot.reagents then
         for _, reagent in pairs(reagentSlot.reagents) do
           -- Some reagents are currencies (reagent.currencyID) rather than items; skip those.
           if reagent.itemID then
-            -- Add reagent to recipe mapping (colon-delimited string of recipeIds).
+            -- Add reagent to the union mapping (colon-delimited string of recipeIds).
             -- Skip if the recipeId is already present: the same itemID can appear in
             -- multiple reagent slots of one recipe, and global resyncs append onto
             -- the previously-stored entry rather than rebuilding it.
@@ -100,6 +111,19 @@ function addon.AddReagentsForRecipe(recipeId, variantSkillLineId)
             elseif not addon.ColonListContains(existing, recipeId) then
               WNTR_reagentToRecipe[variantSkillLineId][reagent.itemID] = existing .. ":" .. recipeStr
             end
+
+            -- Mirror into the required-only mapping when the slot is Basic. The
+            -- transitive walker uses this so chains don't explode through items
+            -- accepted only as optional modifiers.
+            if isRequired then
+              WNTR_reagentToRecipeRequired[variantSkillLineId] = WNTR_reagentToRecipeRequired[variantSkillLineId] or {}
+              local existingReq = WNTR_reagentToRecipeRequired[variantSkillLineId][reagent.itemID]
+              if not existingReq then
+                WNTR_reagentToRecipeRequired[variantSkillLineId][reagent.itemID] = recipeStr
+              elseif not addon.ColonListContains(existingReq, recipeId) then
+                WNTR_reagentToRecipeRequired[variantSkillLineId][reagent.itemID] = existingReq .. ":" .. recipeStr
+              end
+            end
           end
         end
       end
@@ -108,14 +132,131 @@ function addon.AddReagentsForRecipe(recipeId, variantSkillLineId)
 end
 
 
-function addon.GetRecipesForReagent(variantId, reagentId, result)
-  if result then wipe(result) else result = {} end
-  if WNTR_reagentToRecipe[variantId] then
-    for id in addon.IterColonListIds(WNTR_reagentToRecipe[variantId][reagentId]) do
-      tinsert(result, id)
+-- ============================================================
+-- Consumer graph (shared by Tooltip.lua and ProfessionFrame.lua)
+-- ============================================================
+
+-- Depth cap for transitive walks. Covers Ore -> Bar -> Steel Bar ->
+-- Steel Weapon Chain -> Gauntlets (4 hops) with one hop of slack.
+addon.TRANSITIVE_REAGENT_MAX_DEPTH = 5
+
+-- Merged consumer indexes, built lazily from the saved reagent tables:
+--   index[itemId] = flat array {recipeId1, varId1, recipeId2, varId2, ...}
+-- of every recipe (across all variants) consuming the item. Iterating the saved
+-- tables directly would mean, per lookup, one probe into each of the ~60
+-- variant subtables plus re-parsing colon strings on every visit; the index
+-- parses each colon string exactly once per session and turns a lookup into a
+-- single array scan.
+local consumerIndexUnion = nil     -- from WNTR_reagentToRecipe (all slot types)
+local consumerIndexRequired = nil  -- from WNTR_reagentToRecipeRequired (Basic only)
+
+local function BuildConsumerIndex(sourceTable)
+  local index = {}
+  for varId, reagents in pairs(sourceTable) do
+    if type(varId) == "number" then
+      for itemId, recipeStr in pairs(reagents) do
+        local list = index[itemId]
+        if not list then
+          list = {}
+          index[itemId] = list
+        end
+        for recipeId in addon.IterColonListIds(recipeStr) do
+          list[#list + 1] = recipeId
+          list[#list + 1] = varId
+        end
+      end
     end
   end
-  return result
+  return index
+end
+
+-- includeOptional: true -> union of all reagent slot types, false -> only
+-- required (Basic) slots (the default edge set for transitive walks, so chains
+-- don't explode through modifier-y catch-all items like Relics of the Past).
+function addon.GetConsumerIndex(includeOptional)
+  if includeOptional then
+    if not consumerIndexUnion then
+      consumerIndexUnion = BuildConsumerIndex(WNTR_reagentToRecipe)
+    end
+    return consumerIndexUnion
+  end
+  if not consumerIndexRequired then
+    consumerIndexRequired = BuildConsumerIndex(WNTR_reagentToRecipeRequired)
+  end
+  return consumerIndexRequired
+end
+
+-- Called by addon.InvalidateReagentCache (Tooltip.lua) when a sync may have
+-- changed the underlying reagent tables.
+function addon.InvalidateConsumerIndexes()
+  consumerIndexUnion = nil
+  consumerIndexRequired = nil
+end
+
+
+-- Transitive transmog state per recipe, for the professions frame:
+-- does the recipe's output feed - directly or through deeper crafting chains -
+-- into any recipe flagged as having an uncollected transmog appearance?
+--   "unknown" - some reachable recipe's appearance is fully uncollected.
+--   "item"    - reachable appearances are collected, but not from those items.
+--   nil       - nothing uncollected reachable.
+-- Strictly downstream: the recipe's OWN flags are the caller's business.
+-- Follows the same edges as the tooltip's transitive display (required-only by
+-- default, union when transitiveIncludeOptionalReagents is on).
+-- transitiveTransmogCache[recipeId] = "unknown" | "item" | false (= computed, nothing found).
+local transitiveTransmogCache = {}
+
+-- Wiped when a transmog flag actually changes (see SetTransmogFlags below),
+-- when the reagent tables may have changed (InvalidateReagentCache), and when
+-- the transitive config toggles change (MinimapButton.lua).
+function addon.InvalidateTransitiveTransmogCache()
+  wipe(transitiveTransmogCache)
+end
+
+function addon.GetTransitiveTransmogState(recipeId)
+  local cached = transitiveTransmogCache[recipeId]
+  if cached ~= nil then
+    if cached then return cached end
+    return nil
+  end
+
+  local index = addon.GetConsumerIndex(WNTR_config.transitiveIncludeOptionalReagents)
+  local best = nil
+  -- visitedItems[itemId] = highest hop budget it was expanded with. Re-expand
+  -- only when a new path arrives with more remaining hops (a cheaper-reached
+  -- item may see deeper); this both dedups and breaks cycles.
+  local visitedItems = {}
+
+  local function visit(itemId, hopsLeft)
+    if (visitedItems[itemId] or -1) >= hopsLeft then return false end
+    visitedItems[itemId] = hopsLeft
+    local list = index[itemId]
+    if not list then return false end
+    for i = 1, #list, 2 do
+      local rid = list[i]
+      if WNTR_recipeWithUncollectedTransmog[rid] then
+        best = "unknown"
+        return true  -- Strongest state; no need to search further.
+      end
+      if WNTR_recipeWithUncollectedTransmogItem[rid] then
+        best = "item"
+      end
+      if hopsLeft > 1 then
+        local out = WNTR_recipeToOutputItem[rid]
+        if out and visit(out, hopsLeft - 1) then return true end
+      end
+    end
+    return false
+  end
+
+  local output = WNTR_recipeToOutputItem[recipeId]
+  if output then
+    -- The recipe itself is depth 1 in tooltip terms; its consumers are depth 2.
+    visit(output, addon.TRANSITIVE_REAGENT_MAX_DEPTH - 1)
+  end
+
+  transitiveTransmogCache[recipeId] = best or false
+  return best
 end
 
 
@@ -231,6 +372,18 @@ function addon.UpdateRecipeExperience(realmName, playerName, recipeId, recipeInf
 end
 
 
+-- Write both transmog flags of a recipe; when either actually changes, the
+-- transitive transmog cache is stale (this recipe may sit downstream of other
+-- recipes' chains) and gets wiped.
+local function SetTransmogFlags(recipeId, unknownFlag, itemFlag)
+  if (WNTR_recipeWithUncollectedTransmog[recipeId] ~= nil) ~= unknownFlag
+      or (WNTR_recipeWithUncollectedTransmogItem[recipeId] ~= nil) ~= itemFlag then
+    WNTR_recipeWithUncollectedTransmog[recipeId] = unknownFlag or nil
+    WNTR_recipeWithUncollectedTransmogItem[recipeId] = itemFlag or nil
+    addon.InvalidateTransitiveTransmogCache()
+  end
+end
+
 -- Check whether a recipe produces an item with an uncollected transmog appearance.
 -- C_TransmogCollection.PlayerHasTransmog(itemId) appears to be broken (always returns false),
 -- so we inspect the recipe result tooltip instead. Uses C_TooltipInfo.GetRecipeResultItem
@@ -267,19 +420,16 @@ function addon.UpdateUncollectedTransmog(recipeId)
   for i = #tooltipInfo.lines, 3, -1 do
     local lineText = tooltipInfo.lines[i].leftText
     if lineText == TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN then
-      WNTR_recipeWithUncollectedTransmog[recipeId] = true
-      WNTR_recipeWithUncollectedTransmogItem[recipeId] = nil
+      SetTransmogFlags(recipeId, true, false)
       return
     end
     if lineText == TRANSMOGRIFY_TOOLTIP_ITEM_UNKNOWN_APPEARANCE_KNOWN then
-      WNTR_recipeWithUncollectedTransmog[recipeId] = nil
-      WNTR_recipeWithUncollectedTransmogItem[recipeId] = true
+      SetTransmogFlags(recipeId, false, true)
       return
     end
   end
 
-  WNTR_recipeWithUncollectedTransmog[recipeId] = nil
-  WNTR_recipeWithUncollectedTransmogItem[recipeId] = nil
+  SetTransmogFlags(recipeId, false, false)
 end
 
 

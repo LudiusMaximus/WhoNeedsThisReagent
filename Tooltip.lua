@@ -6,6 +6,7 @@ local C_TradeSkillUI_GetProfessionInfoBySkillLineID = _G.C_TradeSkillUI.GetProfe
 local C_TradeSkillUI_GetRecipeInfo                  = _G.C_TradeSkillUI.GetRecipeInfo
 local GameTooltip                                   = _G.GameTooltip
 local GameTooltipText                               = _G.GameTooltipText
+local GetItemInfo                                   = _G.GetItemInfo
 local IsModifiedClick                               = _G.IsModifiedClick
 local UIParent                                      = _G.UIParent
 
@@ -18,22 +19,105 @@ local tinsert                                       = _G.tinsert
 local wipe                                          = _G.wipe
 
 -- Cache addon tables/functions.
-local GetRecipesForReagent = addon.GetRecipesForReagent
+local GetConsumerIndex = addon.GetConsumerIndex
 
+-- Depth cap for the recursive transitive walk (defined in Helpers.lua, shared
+-- with ProfessionFrame.lua's transitive transmog lookup).
+local TRANSITIVE_REAGENT_MAX_DEPTH = addon.TRANSITIVE_REAGENT_MAX_DEPTH
 
 -- Reagent lookup cache: maps itemId -> true/false (is/isn't a known reagent).
 -- Avoids iterating all profession variants on every tooltip. Invalidated on sync.
 local reagentCache = {}
 
-function addon.InvalidateReagentCache()
-  wipe(reagentCache)
-end
+-- Monotonic counter for `insertionOrder` on line records. Reset at the top of
+-- each ShowSecondTooltip() so sortLines() can use it as a stable within-profession
+-- tiebreaker while still respecting the tree order in which lines were emitted.
+local nextInsertionOrder = 0
 
 -- API result caches: avoid re-creating large tables on every tooltip rebuild.
 -- These rarely change during a session (recipe names are constant, learned status
--- only changes on NEW_RECIPE_LEARNED which triggers a full sync anyway).
+-- only changes on NEW_RECIPE_LEARNED which triggers a full sync that invalidates
+-- these caches via InvalidateReagentCache).
 local recipeInfoCache = {}
 local profInfoCache = {}
+
+-- Consumer tree cache: treeCache[reagentId] = array of root nodes. The tree of
+-- recipes reachable from a reagent is character/variant-independent, so it is
+-- built once per hovered reagent and reused by every (character, variant)
+-- section of the tooltip - the per-section work is then just a pruned traversal.
+-- Each node: {recipeId, varId, output, children = {...}, subVariants = {set}}
+-- where subVariants is the union of varIds appearing strictly BELOW the node
+-- (children and deeper). A section for variant V can skip a branch entirely
+-- when node.varId ~= V and not node.subVariants[V].
+-- The cache is keyed by the config it was built under; a config change wipes it.
+local treeCache = {}
+local treeCacheIncludeOptional = nil
+local treeCacheMaxDepth = nil
+
+function addon.InvalidateReagentCache()
+  wipe(reagentCache)
+  wipe(treeCache)
+  wipe(recipeInfoCache)
+  addon.InvalidateConsumerIndexes()
+  addon.InvalidateTransitiveTransmogCache()
+end
+
+-- Recursively expand the consumers of itemId into `children`.
+-- Depth 1 uses the union index so the direct display keeps showing every use
+-- of the hovered reagent; deeper hops use transitiveIndex (required-only by
+-- default, union in expert mode). pathItems is the ancestor set of the current
+-- DFS path - recursion into an item already on the path is a cycle and cut.
+-- Parallel paths are NOT deduplicated: an item reachable via two different
+-- intermediates appears in both subtrees (each path is real lineage).
+local function BuildConsumerTreeChildren(itemId, depth, maxDepth, pathItems, children, unionIndex, transitiveIndex)
+  local index = (depth == 1) and unionIndex or transitiveIndex
+  local list = index[itemId]
+  if not list then return end
+  for i = 1, #list, 2 do
+    local recipeId = list[i]
+    local varId = list[i + 1]
+    local output = WNTR_recipeToOutputItem[recipeId]
+    local node = {
+      recipeId = recipeId,
+      varId = varId,
+      output = output,
+      children = {},
+      subVariants = {},
+    }
+    children[#children + 1] = node
+    if output and depth < maxDepth and not pathItems[output] then
+      pathItems[output] = true
+      BuildConsumerTreeChildren(output, depth + 1, maxDepth, pathItems, node.children, unionIndex, transitiveIndex)
+      pathItems[output] = nil
+      for _, child in ipairs(node.children) do
+        node.subVariants[child.varId] = true
+        for v in pairs(child.subVariants) do
+          node.subVariants[v] = true
+        end
+      end
+    end
+  end
+end
+
+local function GetConsumerTree(reagentId, includeOptional, maxDepth)
+  if treeCacheIncludeOptional ~= includeOptional or treeCacheMaxDepth ~= maxDepth then
+    wipe(treeCache)
+    treeCacheIncludeOptional = includeOptional
+    treeCacheMaxDepth = maxDepth
+  end
+  local cached = treeCache[reagentId]
+  if cached then return cached end
+
+  -- Depth 1 always uses the union index (direct display shows every use of
+  -- the hovered reagent); deeper hops use the config-selected edge set.
+  local unionIndex = GetConsumerIndex(true)
+  local transitiveIndex = GetConsumerIndex(includeOptional)
+
+  local rootNodes = {}
+  BuildConsumerTreeChildren(reagentId, 1, maxDepth, { [reagentId] = true }, rootNodes, unionIndex, transitiveIndex)
+  treeCache[reagentId] = rootNodes
+  return rootNodes
+end
 
 local function GetCachedRecipeInfo(recipeId)
   local cached = recipeInfoCache[recipeId]
@@ -51,8 +135,17 @@ local function GetCachedProfInfo(variantId)
   return cached
 end
 
--- Reusable table for GetRecipesForReagent to avoid per-call allocations.
-local reusableRecipes = {}
+-- Item-name cache for the intermediate reagent headers in the transitive
+-- display. GetItemInfo may return nil if item data isn't cached yet; we skip
+-- caching in that case so a later lookup can succeed once the data arrives.
+local itemNameCache = {}
+local function GetCachedItemName(itemId)
+  local cached = itemNameCache[itemId]
+  if cached then return cached end
+  local name = GetItemInfo(itemId)
+  if name then itemNameCache[itemId] = name end
+  return name
+end
 
 -- Line record pool: avoids allocating {text, kind, r, g, b} tables every rebuild.
 local linePool = {}
@@ -73,6 +166,11 @@ local function AcquireLineRecord()
   rec.b = nil
   rec.profSortKey = nil
   rec.transmog = nil
+  -- Position within its profession block. Layout uses `depth` for indent (0 for
+  -- profession header, N >= 1 for tree lines). sortLines uses `insertionOrder`
+  -- as a stable tiebreaker so recursive tree order is preserved after sort.
+  rec.depth = nil
+  rec.insertionOrder = nil
   return rec
 end
 
@@ -80,11 +178,14 @@ local function ResetLinePool()
   linePoolActive = 0
 end
 
--- Module-level sort comparator (no closure allocation).
-local function sortByProfAndRecipe(a, b)
+-- Module-level sort comparator (no closure allocation). Groups by profession,
+-- puts the profession header first within its block, then preserves the order
+-- in which the recursive tree walk emitted its lines (via insertionOrder).
+local function sortLines(a, b)
   if a.profSortKey ~= b.profSortKey then return a.profSortKey < b.profSortKey end
-  if a.kind ~= b.kind then return a.kind == "profession" end
-  return a.text < b.text
+  if a.kind == "profession" then return b.kind ~= "profession" end
+  if b.kind == "profession" then return false end
+  return (a.insertionOrder or 0) < (b.insertionOrder or 0)
 end
 
 -- Reusable intermediate tables (all wiped before each use to avoid stale data).
@@ -104,6 +205,22 @@ local colMaxWidths = {}
 -- ============================================================
 
 local RECIPE_INDENT = 20  -- roughly the width of the 16x16 profession icon
+-- Per-depth extra indent for recipes / intermediates deeper in the transitive tree.
+-- Depth 1 gets RECIPE_INDENT; depth N gets RECIPE_INDENT + (N-1) * SUB_RECIPE_INDENT
+-- so each level visually nests under its parent. Transmog icons stay at the
+-- normal column-left position; only the text shifts right.
+local SUB_RECIPE_INDENT = 14
+
+
+-- Map a stored relativeDifficulty (0-3 or nil for unlearned) to a colour object.
+local function DifficultyToColor(difficulty)
+  if difficulty == 0 then return DIFFICULT_DIFFICULTY_COLOR
+  elseif difficulty == 1 then return FAIR_DIFFICULTY_COLOR
+  elseif difficulty == 2 then return EASY_DIFFICULTY_COLOR
+  elseif difficulty == 3 then return TRIVIAL_DIFFICULTY_COLOR
+  end
+  return IMPOSSIBLE_DIFFICULTY_COLOR
+end
 
 
 local tooltipFrame
@@ -223,6 +340,106 @@ local function HideSecondTooltip()
   ResetLinePool()
 end
 
+-- Build one recipe line for a character-craftable recipe. Returns the pooled
+-- line record, or nil if the recipe should be hidden (ranks below highest
+-- learned, or unlearned ranks beyond the "next" one when the nextUnlearnedRankOnly
+-- config is on). Called at every depth in the recursive tree walk; layout uses
+-- `depth` to compute the indent.
+local function BuildRecipeLine(recipeId, difficultyByRecipe, profName, realm, character, skillLevel, maxLevel, depth)
+  local recipeInfo = GetCachedRecipeInfo(recipeId)
+  -- No recipe info (e.g. a stale recipeId in saved data after a game update):
+  -- emit nothing rather than erroring on recipeInfo.name below.
+  if not recipeInfo then return nil end
+  local difficulty = difficultyByRecipe[recipeId]
+
+  -- For Legion/BfA ranked recipes (which have previousRecipeID/nextRecipeID),
+  -- skip ranks below the character's highest learned rank: in those expansions
+  -- crafting always uses the highest known rank, so lower ones are noise.
+  if WNTR_recipeToRank[recipeId]
+      and (recipeInfo.previousRecipeID or recipeInfo.nextRecipeID) then
+    local nextId = recipeInfo.nextRecipeID
+    while nextId do
+      if difficultyByRecipe[nextId] ~= nil then return nil end
+      local nextInfo = GetCachedRecipeInfo(nextId)
+      nextId = nextInfo and nextInfo.nextRecipeID
+    end
+  end
+
+  -- "Next unlearned rank only": for ranked recipes the character hasn't learned,
+  -- only show the immediate next rank after the highest learned rank.
+  if WNTR_config.nextUnlearnedRankOnly
+      and WNTR_recipeToRank[recipeId] and difficulty == nil then
+    if recipeInfo.previousRecipeID or recipeInfo.nextRecipeID then
+      -- Legion/BfA style: walk the previousRecipeID chain to find whether
+      -- the immediately preceding rank is learned. If not, hide.
+      local prevId = recipeInfo.previousRecipeID
+      if prevId and difficultyByRecipe[prevId] == nil then return nil end
+      -- If there is no previousRecipeID, this is rank 1 - always show it.
+    else
+      -- Shadowlands style: ranks assigned by name via WNTR_recipeToRank.
+      -- Find the highest learned rank for recipes with the same name.
+      local myRank = WNTR_recipeToRank[recipeId]
+      local nextExpectedRank = 1
+      for otherRecipeId, otherDifficulty in pairs(difficultyByRecipe) do
+        if otherDifficulty ~= nil then
+          local otherRank = WNTR_recipeToRank[otherRecipeId]
+          if otherRank then
+            local otherInfo = GetCachedRecipeInfo(otherRecipeId)
+            if otherInfo and otherInfo.name == recipeInfo.name and otherRank >= nextExpectedRank then
+              nextExpectedRank = otherRank + 1
+            end
+          end
+        end
+      end
+      if myRank ~= nextExpectedRank then return nil end
+    end
+  end
+
+  local textColor = DifficultyToColor(difficulty)
+  local recipeName = recipeInfo.name
+  local rank = WNTR_recipeToRank[recipeId]
+  if rank then
+    local currentXP = WNTR_recipeToExperience[realm] and WNTR_recipeToExperience[realm][character] and WNTR_recipeToExperience[realm][character][recipeId]
+    local nextXP = WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
+    if currentXP and nextXP then
+      recipeName = recipeName .. " (Rank " .. rank .. ", " .. currentXP .. "/" .. nextXP .. ")"
+    else
+      recipeName = recipeName .. " (Rank " .. rank .. ")"
+    end
+  end
+  -- recipeName = recipeName .. " [" .. recipeId .. "]"  -- DEBUG: recipeId display
+
+  -- When a profession is maxed out, the API may still report learned recipes with
+  -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).
+  -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet,
+  -- or the corrected difficulty (nil) indicates it is not learned yet.
+  if recipeInfo.learned and skillLevel and maxLevel and maxLevel > 0 and skillLevel >= maxLevel and difficulty ~= nil then
+    local rankNotMaxed = rank and WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
+    if not rankNotMaxed then
+      textColor = TRIVIAL_DIFFICULTY_COLOR
+    end
+  end
+
+  local recipeLine = AcquireLineRecord()
+  recipeLine.text = recipeName
+  recipeLine.kind = "recipe"
+  recipeLine.r = textColor.r
+  recipeLine.g = textColor.g
+  recipeLine.b = textColor.b
+  recipeLine.profSortKey = profName
+  recipeLine.depth = depth or 1
+  nextInsertionOrder = nextInsertionOrder + 1
+  recipeLine.insertionOrder = nextInsertionOrder
+  if WNTR_config.showUncollectedTransmog then
+    if WNTR_recipeWithUncollectedTransmog[recipeId] then
+      recipeLine.transmog = "unknown"
+    elseif WNTR_recipeWithUncollectedTransmogItem[recipeId] then
+      recipeLine.transmog = "item"
+    end
+  end
+  return recipeLine
+end
+
 local function ShowSecondTooltip()
 
   -- Be fast in the standard case.
@@ -276,6 +493,7 @@ local function ShowSecondTooltip()
   -- Collect lines to display (zero table allocations - all records from pool).
   wipe(collectedLines)
   ResetLinePool()
+  nextInsertionOrder = 0
   local hasLines = false
 
   local titleLine = AcquireLineRecord()
@@ -283,151 +501,139 @@ local function ShowSecondTooltip()
   titleLine.kind = "title"
   tinsert(collectedLines, titleLine)
 
+  -- Transitive-walk configuration (read once per tooltip build).
+  local walkTransitive = WNTR_config.showTransitiveRecipeChains
+  local includeOptional = WNTR_config.transitiveIncludeOptionalReagents
+  local walkMaxDepth = walkTransitive and TRANSITIVE_REAGENT_MAX_DEPTH or 1
+
+  -- Build (or fetch) the shared consumer tree once; every (character, variant)
+  -- section below traverses this same tree with per-variant pruning.
+  local consumerTree = GetConsumerTree(reagentId, includeOptional, walkMaxDepth)
+
   for realm, characters in pairs(WNTR_recipeToDifficulty) do
     for character, difficultiesByVariant in pairs(characters) do
 
       wipe(characterLines)
 
       for variantId, difficultyByRecipe in pairs(difficultiesByVariant) do
-        local recipes = GetRecipesForReagent(variantId, reagentId, reusableRecipes)
-        if #recipes > 0 then
-          local profVariantInfo = GetCachedProfInfo(variantId)
-          local baseIdForIcon = profVariantInfo and profVariantInfo.parentProfessionID or variantId
-          local profName = profVariantInfo.professionName
+        local profVariantInfo = GetCachedProfInfo(variantId)
+        local baseIdForIcon = profVariantInfo and profVariantInfo.parentProfessionID or variantId
+        local profName = profVariantInfo and profVariantInfo.professionName
+        if profName then
           local charLevels = WNTR_variantToSkillLevel[realm] and WNTR_variantToSkillLevel[realm][character]
           local skillLevel = charLevels and charLevels[variantId]
           local maxLevel = charLevels and charLevels["maxLevels"] and charLevels["maxLevels"][variantId]
           if skillLevel and maxLevel and maxLevel > 0 then
             profName = profName .. " (" .. skillLevel .. "/" .. maxLevel .. ")"
           end
-          local profText = "|T" .. WNTR_professionSkillLineToIcon[baseIdForIcon] .. ":14:14:0:0|t " .. profName
 
-          local profLine = AcquireLineRecord()
-          profLine.text = profText
-          profLine.kind = "profession"
-          profLine.profSortKey = profName
-          tinsert(characterLines, profLine)
+          local sectionStart = #characterLines + 1  -- index for the profession header, prepended after content lands.
 
-          for _, recipeId in ipairs(recipes) do
-            local recipeInfo = GetCachedRecipeInfo(recipeId)
-            local difficulty = difficultyByRecipe[recipeId]
+          -- Traverse the shared consumer tree, emitting one line per node on
+          -- the current path.
+          --   * Nodes in THIS variant become "recipe" lines (name, difficulty
+          --     colour, transmog icon per BuildRecipeLine).
+          --   * Nodes in another variant become "intermediate" lines, labelled
+          --     with the produced item's name and the producing profession's
+          --     icon - kept only if their subtree actually emits an own-recipe
+          --     line (a breadcrumb is only useful if it leads somewhere).
+          -- Branches whose subtree cannot contain this variant are skipped
+          -- outright via the precomputed node.subVariants set. Returns true if
+          -- this call emitted at least one own-recipe line, so a foreign
+          -- caller can decide whether to keep its intermediate header.
+          local emitTreeNodes
+          emitTreeNodes = function(nodes, depth)
+            local anyOwn = false
+            for i = 1, #nodes do
+              local node = nodes[i]
 
-            -- To hide recipes if conditions apply.
-            local skipRecipe = false
-
-            -- For Legion/BfA ranked recipes (which have previousRecipeID/nextRecipeID),
-            -- we skip ranks below the character's highest learned rank.
-            -- Because unlike Shadowlands, in Legion/BfA you always craft the highest rank only.
-            if recipeInfo and WNTR_recipeToRank[recipeId]
-                and (recipeInfo.previousRecipeID or recipeInfo.nextRecipeID) then
-              local nextId = recipeInfo.nextRecipeID
-              while nextId do
-                if difficultyByRecipe[nextId] ~= nil then
-                  skipRecipe = true
-                  break
-                end
-                local nextInfo = GetCachedRecipeInfo(nextId)
-                nextId = nextInfo and nextInfo.nextRecipeID
-              end
-            end
-
-            -- "Next unlearned rank only": for ranked recipes the character hasn't learned,
-            -- only show the immediate next rank after the highest learned rank.
-            if not skipRecipe and WNTR_config.nextUnlearnedRankOnly
-                and recipeInfo and WNTR_recipeToRank[recipeId] and difficulty == nil then
-              if recipeInfo.previousRecipeID or recipeInfo.nextRecipeID then
-                -- Legion/BfA style: walk the previousRecipeID chain to find
-                -- whether the immediately preceding rank is learned.
-                local prevId = recipeInfo.previousRecipeID
-                if prevId then
-                  -- Skip unless the previous rank is learned by this character.
-                  if difficultyByRecipe[prevId] == nil then
-                    skipRecipe = true
-                  end
-                end
-                -- If there is no previousRecipeID, this is rank 1 - always show it.
-              else
-                -- Shadowlands style: ranks assigned by name via WNTR_recipeToRank.
-                -- Find the highest learned rank for recipes with the same name.
-                local myRank = WNTR_recipeToRank[recipeId]
-                local nextExpectedRank = 1
-                for otherRecipeId, otherDifficulty in pairs(difficultyByRecipe) do
-                  if otherDifficulty ~= nil then
-                    local otherRank = WNTR_recipeToRank[otherRecipeId]
-                    if otherRank then
-                      local otherInfo = GetCachedRecipeInfo(otherRecipeId)
-                      if otherInfo and otherInfo.name == recipeInfo.name and otherRank >= nextExpectedRank then
-                        nextExpectedRank = otherRank + 1
-                      end
+              if node.varId == variantId then
+                -- Own recipe: emit unless the rank filters hide it. Recurse
+                -- only when the line is actually shown AND deeper own recipes
+                -- can exist - a rank-hidden line must not recurse, or its
+                -- children would dangle under the previous visible line.
+                -- No subtree is lost: all ranks of a chain share the same
+                -- output item, so the visible rank's node carries the same
+                -- children.
+                local line = BuildRecipeLine(node.recipeId, difficultyByRecipe, profName, realm, character, skillLevel, maxLevel, depth)
+                if line then
+                  tinsert(characterLines, line)
+                  anyOwn = true
+                  if node.subVariants[variantId] then
+                    if emitTreeNodes(node.children, depth + 1) then
+                      anyOwn = true
                     end
                   end
                 end
-                if myRank ~= nextExpectedRank then
-                  skipRecipe = true
+
+              elseif node.subVariants[variantId] then
+                -- Foreign variant leading (possibly) to own recipes. Acquire
+                -- the header first so its insertionOrder locks in BEFORE any
+                -- lines the recursion adds (sort places header first). Only
+                -- tinsert if the recursion actually produces an own-recipe
+                -- line, otherwise the pooled record just goes unused this build.
+                local itemName = GetCachedItemName(node.output)
+                if itemName then
+                  local varId = node.varId
+                  local producerBaseId = WNTR_variantToBaseProfession[varId]
+                  local charHasProducerBase = false
+                  if producerBaseId then
+                    for cvId in pairs(difficultiesByVariant) do
+                      if WNTR_variantToBaseProfession[cvId] == producerBaseId then
+                        charHasProducerBase = true
+                        break
+                      end
+                    end
+                  end
+                  local color
+                  if charHasProducerBase then
+                    local producerDifficulty = difficultiesByVariant[varId] and difficultiesByVariant[varId][node.recipeId]
+                    color = DifficultyToColor(producerDifficulty)
+                  else
+                    color = CORRUPTION_COLOR
+                  end
+                  local text = itemName
+                  local producerIcon = producerBaseId and WNTR_professionSkillLineToIcon[producerBaseId]
+                  if producerIcon then
+                    text = text .. " |T" .. producerIcon .. ":14:14:0:0|t"
+                  end
+                  local headerLine = AcquireLineRecord()
+                  headerLine.text = text
+                  headerLine.kind = "intermediate"
+                  headerLine.r = color.r
+                  headerLine.g = color.g
+                  headerLine.b = color.b
+                  headerLine.profSortKey = profName
+                  headerLine.depth = depth
+                  nextInsertionOrder = nextInsertionOrder + 1
+                  headerLine.insertionOrder = nextInsertionOrder
+
+                  if emitTreeNodes(node.children, depth + 1) then
+                    tinsert(characterLines, headerLine)
+                    anyOwn = true
+                  end
                 end
               end
             end
+            return anyOwn
+          end
+          emitTreeNodes(consumerTree, 1)
 
-            if not skipRecipe then
-
-              local textColor = IMPOSSIBLE_DIFFICULTY_COLOR
-              if difficulty == 0 then
-                textColor = DIFFICULT_DIFFICULTY_COLOR
-              elseif difficulty == 1 then
-                textColor = FAIR_DIFFICULTY_COLOR
-              elseif difficulty == 2 then
-                textColor = EASY_DIFFICULTY_COLOR
-              elseif difficulty == 3 then
-                textColor = TRIVIAL_DIFFICULTY_COLOR
-              end
-              local recipeName = recipeInfo.name
-              local rank = WNTR_recipeToRank[recipeId]
-              if rank then
-                local currentXP = WNTR_recipeToExperience[realm] and WNTR_recipeToExperience[realm][character] and WNTR_recipeToExperience[realm][character][recipeId]
-                local nextXP = WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
-                if currentXP and nextXP then
-                  recipeName = recipeName .. " (Rank " .. rank .. ", " .. currentXP .. "/" .. nextXP .. ")"
-                else
-                  recipeName = recipeName .. " (Rank " .. rank .. ")"
-                end
-              end
-              recipeName = recipeName .. " [" .. recipeId .. "]"  -- DEBUG: recipeId display
-
-              -- When a profession is maxed out, the API may still report learned recipes with
-              -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).
-              -- Force all such recipes to TRIVIAL, unless it's a rank recipe whose rank isn't maxed yet,
-              -- or the corrected difficulty (nil) indicates it is not learned yet.
-              if recipeInfo.learned and skillLevel and maxLevel and maxLevel > 0 and skillLevel >= maxLevel and difficulty ~= nil then
-                local rankNotMaxed = rank and WNTR_recipeToExperience["nextLevels"] and WNTR_recipeToExperience["nextLevels"][recipeId]
-                if not rankNotMaxed then
-                  textColor = TRIVIAL_DIFFICULTY_COLOR
-                end
-              end
-
-              local recipeLine = AcquireLineRecord()
-              recipeLine.text = recipeName
-              recipeLine.kind = "recipe"
-              recipeLine.r = textColor.r
-              recipeLine.g = textColor.g
-              recipeLine.b = textColor.b
-              recipeLine.profSortKey = profName
-              if WNTR_config.showUncollectedTransmog then
-                if WNTR_recipeWithUncollectedTransmog[recipeId] then
-                  recipeLine.transmog = "unknown"
-                elseif WNTR_recipeWithUncollectedTransmogItem[recipeId] then
-                  recipeLine.transmog = "item"
-                end
-              end
-              tinsert(characterLines, recipeLine)
-
-            end -- if not skipRecipe
+          -- If any lines landed for this variant, prepend the profession header.
+          if #characterLines >= sectionStart then
+            local profText = "|T" .. WNTR_professionSkillLineToIcon[baseIdForIcon] .. ":14:14:0:0|t " .. profName
+            local profLine = AcquireLineRecord()
+            profLine.text = profText
+            profLine.kind = "profession"
+            profLine.profSortKey = profName
+            tinsert(characterLines, sectionStart, profLine)
           end
         end
       end
 
       -- Only add character block if it has at least one recipe.
       if #characterLines > 0 then
-        sort(characterLines, sortByProfAndRecipe)
+        sort(characterLines, sortLines)
 
         local classColor = WNTR_characterToClass[realm] and WNTR_characterToClass[realm][character] and C_ClassColor_GetClassColor(WNTR_characterToClass[realm][character])
         local charText = classColor and classColor:WrapTextInColorCode(character) or character
@@ -497,7 +703,7 @@ local function ShowSecondTooltip()
         charBlockStart[numCharBlocks] = i
         charBlockEnd[numCharBlocks] = i
         lineToBlock[i] = numCharBlocks
-      elseif currentBlockIdx > 0 and (kind == "profession" or kind == "recipe") then
+      elseif currentBlockIdx > 0 and (kind == "profession" or kind == "recipe" or kind == "intermediate") then
         charBlockEnd[currentBlockIdx] = i
         lineToBlock[i] = currentBlockIdx
       end
@@ -586,7 +792,11 @@ local function ShowSecondTooltip()
         fs:SetTextColor(lineData.r, lineData.g, lineData.b)
       end
 
-      local indent = lineData.kind == "recipe" and RECIPE_INDENT or 0
+      local kind = lineData.kind
+      local indent = 0
+      if kind == "recipe" or kind == "intermediate" then
+        indent = RECIPE_INDENT + ((lineData.depth or 1) - 1) * SUB_RECIPE_INDENT
+      end
       local w = fs:GetUnboundedStringWidth() + indent
       if w > colMaxWidths[col] then colMaxWidths[col] = w end
     end
@@ -623,14 +833,18 @@ local function ShowSecondTooltip()
   for col = 1, numColumns do
     local yOffset = -(PADDING_V / 2)
     for idx = columnStart[col], columnEnd[col] do
-      local kind = collectedLines[idx].kind
-      local indent = kind == "recipe" and RECIPE_INDENT or 0
+      local lineData = collectedLines[idx]
+      local kind = lineData.kind
+      local indent = 0
+      if kind == "recipe" or kind == "intermediate" then
+        indent = RECIPE_INDENT + ((lineData.depth or 1) - 1) * SUB_RECIPE_INDENT
+      end
       if kind == "character" then yOffset = yOffset - CHARACTER_PRE_SPACING end
       fontStringPool[idx]:SetPoint("TOPLEFT", tooltipFrame, "TOPLEFT", x + indent, yOffset)
       -- Uncollected transmog indicator: place icon in the indent space to the left of the recipe name.
       -- "unknown" = appearance not collected (full opacity).
       -- "item" = appearance collected but not from this item (semi-transparent).
-      local transmog = collectedLines[idx].transmog
+      local transmog = lineData.transmog
       if transmog then
         local iconFs = AcquireFontString()
         iconFs:SetFontObject(GameTooltipText)

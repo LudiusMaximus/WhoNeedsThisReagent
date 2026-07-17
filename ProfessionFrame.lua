@@ -1,7 +1,8 @@
 local folderName, addon = ...
 
 -- Hook the profession frame's recipe list to show transmog icons next to recipes
--- that produce items with uncollected appearances.
+-- that produce items with uncollected appearances - directly, or (desaturated)
+-- transitively via crafting chains through the recipe's product.
 --
 -- ProfessionsRecipeListRecipeMixin:Init() is called every time a recipe row is
 -- recycled by the scroll box. We post-hook it to create/show/hide a small transmog
@@ -9,6 +10,27 @@ local folderName, addon = ...
 --
 -- The recipe rows have very little space to the left of the Label font string,
 -- so we shift SkillUps (and with it the anchored Label) to the right to make room.
+
+-- When the open profession variant is maxed out, no recipe can show a skill-up
+-- indicator, so the SkillUps column is empty on every row. In that case we
+-- reclaim it: shift SkillUps (and with it the anchored Label) left so the
+-- recipe names sit right next to our transmog icons, and widen the Label by
+-- the same amount (its width was computed by Blizzard's Init for the original
+-- position). Fine-tune here.
+-- Geometry: our icon spans x -12..+2 (14 wide); the Label starts at
+-- SkillUps.x + 30 (26 button width + 4 anchor offset). The normal shifted
+-- position is SkillUps.x = 0 -> Label at 30. A left shift of 25 puts the
+-- Label at 5, leaving a 3 px gap after the icon.
+local MAXED_PROFESSION_LEFT_SHIFT = 25
+
+-- True if the currently loaded profession variant is at its skill cap.
+local function OpenVariantIsMaxed()
+  local variantId = C_TradeSkillUI.GetProfessionChildSkillLineID()
+  if not variantId or variantId == 0 then return false end
+  local info = C_TradeSkillUI.GetProfessionInfoBySkillLineID(variantId)
+  return info and info.maxSkillLevel and info.maxSkillLevel > 0
+      and info.skillLevel >= info.maxSkillLevel or false
+end
 
 -- ProfessionsRecipeListRecipeMixin is defined in Blizzard_ProfessionsTemplates,
 -- which is loaded on demand. Wait for it before hooking.
@@ -29,9 +51,24 @@ local function HookRecipeListInit()
     -- only resets the position when SkillUps is shown - so an increment would
     -- accumulate on recycled frames.
     -- Original Blizzard position: LEFT, self, LEFT, -9, yOfs (yOfs is 0 or 1).
+    -- Maxed variant: reclaim the always-empty SkillUps column by shifting left
+    -- (see MAXED_PROFESSION_LEFT_SHIFT above). The IsShown guard is a safety
+    -- net: a visible skill-up indicator must never be shifted under our icon.
+    local leftShift = 0
+    if OpenVariantIsMaxed() and not self.SkillUps:IsShown() then
+      leftShift = MAXED_PROFESSION_LEFT_SHIFT
+    end
     local _, _, _, _, yOfs = self.SkillUps:GetPoint(1)
     self.SkillUps:ClearAllPoints()
-    self.SkillUps:SetPoint("LEFT", self, "LEFT", -9 + 9, yOfs or 0)
+    self.SkillUps:SetPoint("LEFT", self, "LEFT", -9 + 9 - leftShift, yOfs or 0)
+    if leftShift > 0 then
+      -- Blizzard's Init computed the Label width for the unshifted position:
+      -- min(available space, natural string width). The shift frees the same
+      -- amount of space on the right, so extend by it - again capped at the
+      -- natural width, which also keeps the RIGHT-anchored Count snug for
+      -- labels that already fit.
+      self.Label:SetWidth(math.min(self.Label:GetWidth() + leftShift, self.Label:GetUnboundedStringWidth()))
+    end
 
     -- All ranks of a recipe produce the same item appearance, so a direct
     -- lookup by recipeID is sufficient - no chain walk needed.
@@ -41,11 +78,24 @@ local function HookRecipeListInit()
       return
     end
 
+    -- Icon states (two independent visual channels, matching the tooltip):
+    --   alpha:      full = appearance fully uncollected ("unknown"),
+    --               0.5  = collected, but not from this item ("item").
+    --   saturation: normal      = this recipe's own product,
+    --               desaturated = transitive - the product only leads, through
+    --                             crafting chains, to a recipe with an
+    --                             uncollected appearance.
+    -- Direct flags win over transitive; transitive lookup is gated on the
+    -- "Show transitive recipe chains" option and cached in Helpers.lua.
     local transmogType
+    local transitive = false
     if WNTR_recipeWithUncollectedTransmog[recipeId] then
       transmogType = "unknown"
     elseif WNTR_recipeWithUncollectedTransmogItem[recipeId] then
       transmogType = "item"
+    elseif WNTR_config.showTransitiveRecipeChains then
+      transmogType = addon.GetTransitiveTransmogState(recipeId)
+      transitive = transmogType ~= nil
     end
     if not transmogType then
       if self.WNTRTransmogIcon then self.WNTRTransmogIcon:Hide() end
@@ -62,6 +112,9 @@ local function HookRecipeListInit()
 
     local icon = self.WNTRTransmogIcon
     icon:SetAlpha(transmogType == "item" and 0.5 or 1)
+    -- Always set explicitly: rows are recycled, so a stale desaturation from a
+    -- previous occupant must be cleared for direct icons.
+    icon:SetDesaturated(transitive)
     icon:ClearAllPoints()
 
     -- Fixed column position for all icons, regardless of SkillUps visibility.

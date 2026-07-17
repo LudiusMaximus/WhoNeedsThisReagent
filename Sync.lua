@@ -1,11 +1,13 @@
 local folderName, addon = ...
 
 local CONFIG_DEFAULTS = {
-  showPendingSyncMessages          = true,
-  showStatusMessages               = true,
-  showUncollectedTransmog          = true,
-  nextUnlearnedRankOnly            = true,
-  uncollectedTransmogInProfessions = true,
+  showPendingSyncMessages             = true,
+  showStatusMessages                  = true,
+  showUncollectedTransmog             = true,
+  nextUnlearnedRankOnly               = true,
+  uncollectedTransmogInProfessions    = true,
+  showTransitiveRecipeChains          = true,
+  transitiveIncludeOptionalReagents   = false,
 }
 
 
@@ -901,6 +903,16 @@ local function EventFrameFunction(self, event, ...)
         end
       end
       WNTR_reagentToRecipe["buildNumber"] = currentBuildNumber
+    end
+
+    -- Backfill WNTR_reagentToRecipeRequired for any variant that exists in the
+    -- union table but not in the required-only mirror. Idempotent: once every
+    -- known variant has been globally re-synced under the new AddReagentsForRecipe
+    -- that writes both tables, this loop finds no gaps and no-ops.
+    for variantId in pairs(WNTR_reagentToRecipe) do
+      if type(variantId) == "number" and not WNTR_reagentToRecipeRequired[variantId] then
+        WNTR_pendingGlobalSync[variantId] = true
+      end
     end
 
 

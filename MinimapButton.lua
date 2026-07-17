@@ -183,9 +183,44 @@ do
           end
         )
         cb:SetOnEnter(function(frame)
-          ShowSettingsTooltip(frame, "Transmog icon in professions", "Display a transmog icon next to recipes in the profession frame if the crafted item has an appearance you haven't collected yet. Semi-transparent if the appearance is known from a different item.")
+          ShowSettingsTooltip(frame, "Transmog icon in professions", "Display a transmog icon next to recipes in the profession frame if the crafted item has an appearance you haven't collected yet. Semi-transparent if the appearance is known from a different item. Desaturated (grey) if the crafted item only leads to such a recipe through further crafting (requires transitive recipe chains below).")
         end)
         cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+
+        -- Top-level (not in a submenu) because it affects both the reagent
+        -- tooltip and the professions frame transmog icons.
+        cb = menu:CreateCheckbox(
+          "Show transitive recipe chains",
+          function() return WNTR_config.showTransitiveRecipeChains end,
+          function()
+            WNTR_config.showTransitiveRecipeChains = not WNTR_config.showTransitiveRecipeChains
+            addon.RefreshProfessionRecipeList()
+          end
+        )
+        cb:SetOnEnter(function(frame)
+          ShowSettingsTooltip(frame, "Show transitive recipe chains", "Follow crafting chains through intermediate products (e.g. Iron Ore -> Iron Bar -> Blacksmithing recipes). In the reagent tooltip, each character's section also lists recipes reachable only via such intermediates, indented beneath them. In the professions frame, recipes whose product leads to an uncollected appearance through such a chain get a desaturated transmog icon.")
+        end)
+        cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+
+        -- Only offered while the master toggle is on. Menus rebuild on each
+        -- open, so toggling the master and reopening the menu shows/hides
+        -- this sub-option cleanly - simpler than a runtime disabled state.
+        if WNTR_config.showTransitiveRecipeChains then
+          cb = menu:CreateCheckbox(
+            "     Also follow optional reagents",
+            function() return WNTR_config.transitiveIncludeOptionalReagents end,
+            function()
+              WNTR_config.transitiveIncludeOptionalReagents = not WNTR_config.transitiveIncludeOptionalReagents
+              -- The edge set changed; cached transitive transmog states are stale.
+              addon.InvalidateTransitiveTransmogCache()
+              addon.RefreshProfessionRecipeList()
+            end
+          )
+          cb:SetOnEnter(function(frame)
+            ShowSettingsTooltip(frame, "Also follow optional reagents", "By default the transitive chains only follow required-reagent edges. Enable this to also walk optional-reagent edges (Modifying / Finishing slots). Warning: catch-all items like Relics of the Past are optional in many recipes, so enabling this can produce very long lists.")
+          end)
+          cb:SetOnLeave(function() HideSettingsTooltipDelayed() end)
+        end
       end)
     end
   end

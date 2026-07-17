@@ -4,8 +4,16 @@ local folderName, addon = ...
 -- ### Saved variables.
 
 -- WNTR_reagentToRecipe[variantSkillLineId][reagentItemId] = "recipeId:recipeId:..." (colon-delimited string).
+-- All reagent slots contribute here (required, optional, finishing, automatic).
 -- Also stores WNTR_reagentToRecipe["buildNumber"] to detect game client updates.
 WNTR_reagentToRecipe = WNTR_reagentToRecipe or {}
+
+-- Same shape as WNTR_reagentToRecipe, but only records edges where the reagent
+-- slot is `Enum.CraftingReagentType.Basic` (the required stack). Used by the
+-- transitive-reagent walker so its chains don't explode through modifier-y
+-- catch-all items (Relics of the Past and other Modifying / Finishing slots
+-- that get accepted by many recipes without actually being needed).
+WNTR_reagentToRecipeRequired = WNTR_reagentToRecipeRequired or {}
 
 
 -- WNTR_recipeToDifficulty[realmName][playerName][variantSkillLineId][recipeId] = relativeDifficulty (0-3).
@@ -59,6 +67,13 @@ WNTR_variantToBaseProfession = WNTR_variantToBaseProfession or {}
 -- and IsRecipeInSkillLine() is trustworthy. Entries are appended (deduped, never wiped)
 -- on global sync, so data from other characters is preserved.
 WNTR_variantToRecipes = WNTR_variantToRecipes or {}
+
+-- WNTR_recipeToOutputItem[recipeId] = itemID. The item id a recipe produces
+-- (from schematic.outputItemID). Used to walk the reagent -> intermediate ->
+-- final-product graph for the tooltip's transitive-reagent display and the
+-- professions frame's transitive transmog icons. Populated during global sync
+-- alongside the reagent mapping.
+WNTR_recipeToOutputItem = WNTR_recipeToOutputItem or {}
 
 
 -- LibDBIcon minimap button position/state.
@@ -129,7 +144,8 @@ WNTR_pendingCharacterSync = WNTR_pendingCharacterSync or {}
 --     and ProcessPendingChanges skips matching variants at fire time, so the two
 --     timer paths can never both sync the same base in one craft.
 --
---   TRANSMOG_COLLECTION_SOURCE_ADDED re-checks flagged recipes via a frame-spread.
+--   TRANSMOG_COLLECTION_SOURCE_ADDED / _REMOVED re-check flagged recipes via a
+--   frame-spread; _REMOVED additionally triggers the rate-limited broad self-repair scan.
 --
 -- Pending sync (two tiers, both persisted as saved variables):
 --   WNTR_pendingGlobalSync[variantSkillLineId] = true
@@ -140,11 +156,13 @@ WNTR_pendingCharacterSync = WNTR_pendingCharacterSync or {}
 --
 -- File layout:
 --   main.lua            - Saved variables, namespace setup, architecture docs.
---   Helpers.lua         - Utility functions (sound, data mutation, recipe rank/reagent helpers).
+--   Helpers.lua         - Utility functions (sound, data mutation, recipe rank/reagent
+--                         helpers, shared consumer graph + transitive transmog lookup).
 --   MinimapButton.lua   - LibDataBroker/LibDBIcon minimap icon with pulsating glow.
 --   Sync.lua            - Profession syncing engine, event handling, pending-sync management.
 --   Tooltip.lua         - Custom multi-column "Who needs this reagent?" tooltip.
---   ProfessionFrame.lua - Hook on the profession recipe list to show transmog icons.
+--   ProfessionFrame.lua - Hook on the profession recipe list to show transmog icons
+--                         (direct and transitive).
 --
 -- References:
 --   https://warcraft.wiki.gg/wiki/API_GetProfessions
