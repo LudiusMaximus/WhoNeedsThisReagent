@@ -391,7 +391,7 @@ local function ShowSecondTooltip()
                   recipeName = recipeName .. " (Rank " .. rank .. ")"
                 end
               end
-              -- recipeName = recipeName .. " [" .. recipeId .. "]"  -- DEBUG: recipeId display
+              recipeName = recipeName .. " [" .. recipeId .. "]"  -- DEBUG: recipeId display
 
               -- When a profession is maxed out, the API may still report learned recipes with
               -- non-trivial difficulty colors (e.g. Shadowlands recipes show DIFFICULT even at cap).

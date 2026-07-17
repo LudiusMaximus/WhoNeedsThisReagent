@@ -1,6 +1,7 @@
 local _, addon = ...
 
 -- Cache of global WoW API tables/functions.
+local C_Item_IsItemDataCachedByID                = _G.C_Item.IsItemDataCachedByID
 local C_TooltipInfo_GetRecipeResultItem          = _G.C_TooltipInfo.GetRecipeResultItem
 local C_TradeSkillUI_GetRecipeInfo               = _G.C_TradeSkillUI.GetRecipeInfo
 local C_TradeSkillUI_GetRecipeSchematic          = _G.C_TradeSkillUI.GetRecipeSchematic
@@ -243,6 +244,18 @@ end
 -- Sets WNTR_recipeWithUncollectedTransmogItem[recipeId] = true when the appearance is known
 -- but not from this specific item ("You've collected this appearance, but not from this item").
 function addon.UpdateUncollectedTransmog(recipeId)
+  -- If the output item's data hasn't been cached by the client yet (common on
+  -- fresh login before the profession backend loads), GetRecipeResultItem still
+  -- returns a table but the tooltip is truncated - it typically has the item
+  -- name / level / bind type but is missing the transmog line at the end. If
+  -- we ran the parse against that, we'd see no matching line and wrongly clear
+  -- the saved flags. Preserve them until the item data is ready.
+  local schematic = C_TradeSkillUI_GetRecipeSchematic(recipeId, false)
+  if schematic and schematic.outputItemID
+      and not C_Item_IsItemDataCachedByID(schematic.outputItemID) then
+    return
+  end
+
   local tooltipInfo = C_TooltipInfo_GetRecipeResultItem(recipeId)
   if not (tooltipInfo and tooltipInfo.lines) then
     -- No tooltip data (e.g. recipe belongs to a profession whose backend is not
@@ -267,4 +280,43 @@ function addon.UpdateUncollectedTransmog(recipeId)
 
   WNTR_recipeWithUncollectedTransmog[recipeId] = nil
   WNTR_recipeWithUncollectedTransmogItem[recipeId] = nil
+end
+
+
+-- Debug helper. Call via
+--   /run WNTR_DebugTransmog(RECIPEID)
+-- to dump the tooltip data we actually inspect (from C_TooltipInfo.GetRecipeResultItem)
+-- alongside the current saved flags and the two constants we match against.
+-- Routes through Ludius_DebugPrint (from MinimalWorkingExample) if that addon is
+-- loaded - its scrollable window makes the output copy-pasteable; otherwise
+-- falls back to plain chat print.
+function WNTR_DebugTransmog(recipeId)
+  local sink = _G.Ludius_DebugPrint
+  local function out(...)
+    if sink then
+      local n = select("#", ...)
+      local parts = {}
+      for i = 1, n do parts[i] = tostring(select(i, ...)) end
+      sink(table.concat(parts, "\t"))
+    else
+      print(...)
+    end
+  end
+
+  out("--- WNTR Transmog Debug for recipeId", recipeId, "---")
+  local schematic = C_TradeSkillUI_GetRecipeSchematic(recipeId, false)
+  out("  outputItemID (context):", schematic and schematic.outputItemID)
+  out("  saved WNTR_recipeWithUncollectedTransmog     [", recipeId, "] =", WNTR_recipeWithUncollectedTransmog[recipeId])
+  out("  saved WNTR_recipeWithUncollectedTransmogItem [", recipeId, "] =", WNTR_recipeWithUncollectedTransmogItem[recipeId])
+  out("  const TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN           =", TRANSMOGRIFY_TOOLTIP_APPEARANCE_UNKNOWN)
+  out("  const TRANSMOGRIFY_TOOLTIP_ITEM_UNKNOWN_APPEARANCE_KNOWN =", TRANSMOGRIFY_TOOLTIP_ITEM_UNKNOWN_APPEARANCE_KNOWN)
+  local tooltipInfo = C_TooltipInfo_GetRecipeResultItem(recipeId)
+  if not (tooltipInfo and tooltipInfo.lines) then
+    out("  GetRecipeResultItem returned no lines")
+    return
+  end
+  out("  recipe-result tooltip lines (leftText):")
+  for i, line in ipairs(tooltipInfo.lines) do
+    out("   ", i, tostring(line.leftText))
+  end
 end

@@ -57,6 +57,7 @@ local debugprofilestop                              = _G.debugprofilestop
 local GetProfessionInfo                             = _G.GetProfessionInfo
 local GetProfessions                                = _G.GetProfessions
 local GetRealmName                                  = _G.GetRealmName
+local GetTime                                       = _G.GetTime
 local UnitName                                      = _G.UnitName
 
 local string_match                                  = _G.string.match
@@ -237,6 +238,57 @@ local function QueueTransmogRefresh(recipeIds, priorityCount)
   end
   if #transmogRefreshList > 0 then
     transmogRefreshFrame:SetScript("OnUpdate", TransmogRefreshFunction)
+  end
+end
+
+
+-- Broad safety-net re-check of every recipe belonging to the current character's
+-- known variants. Catches stale flags that the event-driven paths miss - most
+-- notably a recipe that was correctly unflagged (fully collected from this item)
+-- and later had its specific source removed (item destroyed / vendor refund).
+-- TRANSMOG_COLLECTION_SOURCE_REMOVED only iterates currently-flagged recipes, so
+-- that transition slips through; this scan closes the gap.
+--
+-- Trigger points: PLAYER_LOGIN (once per session) and TRANSMOG_COLLECTION_SOURCE_REMOVED.
+-- Rate-limited to at most once per 5 minutes to keep the transmog spread from being
+-- fed constantly. Also skipped if the spread is already running, to avoid piling on.
+local TRANSMOG_SELF_REPAIR_INTERVAL = 300  -- 5 minutes
+local lastTransmogSelfRepairTime = nil
+
+local function RunTransmogSelfRepair()
+  local now = GetTime()
+  if lastTransmogSelfRepairTime
+      and (now - lastTransmogSelfRepairTime) < TRANSMOG_SELF_REPAIR_INTERVAL then
+    return
+  end
+  if transmogRefreshFrame:GetScript("OnUpdate") then
+    -- A spread is already running; don't pile on. Try again next trigger.
+    return
+  end
+
+  local realmName = GetRealmName()
+  local playerName = UnitName("player")
+  local charVariants = WNTR_variantToSkillLevel[realmName]
+      and WNTR_variantToSkillLevel[realmName][playerName]
+  if not charVariants then return end
+
+  local seen = {}
+  local recipeIds = {}
+  for variantId in pairs(charVariants) do
+    -- Skip the "maxLevels" pseudo-key stored alongside real variant ids.
+    if type(variantId) == "number" then
+      for id in IterColonListIds(WNTR_variantToRecipes[variantId]) do
+        if not seen[id] then
+          seen[id] = true
+          tinsert(recipeIds, id)
+        end
+      end
+    end
+  end
+
+  if #recipeIds > 0 then
+    lastTransmogSelfRepairTime = now
+    QueueTransmogRefresh(recipeIds)
   end
 end
 
@@ -1078,6 +1130,7 @@ local function EventFrameFunction(self, event, ...)
   -- and to clean up data for professions the character no longer has.
   elseif event == "PLAYER_LOGIN" then
     UpdateProfessions()
+    RunTransmogSelfRepair()
 
 
   -- #########################################################################
@@ -1181,9 +1234,10 @@ local function EventFrameFunction(self, event, ...)
   -- need a schematic + item-info lookup per flagged recipe, which can stutter
   -- when the flagged set is large. The spread bounds the cost either way.
   --
-  -- Not caught: SOURCE_REMOVED can newly-flag a previously-unflagged recipe
-  -- whose exact output item was the removed source. Such a recipe self-
-  -- corrects on the next global sync of its variant.
+  -- SOURCE_REMOVED can also newly-flag a previously-unflagged recipe whose
+  -- exact output item was the removed source (the flagged-only scan misses
+  -- that transition). We catch it by additionally kicking off the broad
+  -- RunTransmogSelfRepair below - rate-limited to once per 5 minutes.
   elseif event == "TRANSMOG_COLLECTION_SOURCE_ADDED"
       or event == "TRANSMOG_COLLECTION_SOURCE_REMOVED" then
     -- Build the set of recipeIds belonging to the currently-viewed variant.
@@ -1217,6 +1271,14 @@ local function EventFrameFunction(self, event, ...)
     end
     if #front > 0 then
       QueueTransmogRefresh(front, priorityCount)
+    end
+
+    -- Safety net: SOURCE_REMOVED can newly-flag a previously-unflagged recipe
+    -- whose exact output item was the removed source, and the flagged-only scan
+    -- above misses that transition. Run the broad self-repair as well; its own
+    -- 5-minute rate limit keeps the cost bounded.
+    if event == "TRANSMOG_COLLECTION_SOURCE_REMOVED" then
+      RunTransmogSelfRepair()
     end
 
 
