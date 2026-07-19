@@ -6,6 +6,10 @@ local C_TradeSkillUI_GetProfessionInfoBySkillLineID = _G.C_TradeSkillUI.GetProfe
 local C_TradeSkillUI_GetRecipeInfo                  = _G.C_TradeSkillUI.GetRecipeInfo
 local GameTooltip                                   = _G.GameTooltip
 local GameTooltipText                               = _G.GameTooltipText
+-- Item-comparison ("shopping") tooltips, shown when SHIFT-inspecting an
+-- equippable item. Globals from Blizzard_GameTooltip, present before addons load.
+local ShoppingTooltip1                              = _G.ShoppingTooltip1
+local ShoppingTooltip2                              = _G.ShoppingTooltip2
 local GetItemInfo                                   = _G.GetItemInfo
 local IsModifiedClick                               = _G.IsModifiedClick
 local UIParent                                      = _G.UIParent
@@ -329,6 +333,10 @@ end
 -- Cache: skip rebuilding when nothing changed between frames.
 local lastTooltipLink = nil
 local lastTooltipModifier = false
+-- GameTooltip's own anchor point, captured at build time. Read early (before we
+-- touch GameTooltip) to avoid GetPoint() returning a tainted string, and reused
+-- by AnchorTooltipFrame on the no-rebuild frames so we don't re-read it.
+local lastGameTooltipAnchor = nil
 
 local function HideSecondTooltip()
   if tooltipFrame and tooltipFrame:IsShown() then
@@ -338,6 +346,44 @@ local function HideSecondTooltip()
   lastTooltipLink = nil
   lastTooltipModifier = false
   ResetLinePool()
+end
+
+-- Position tooltipFrame beside GameTooltip, stepping past any item-comparison
+-- "shopping" tooltips on the side we open toward. The item can be equippable
+-- (some gear doubles as a crafting reagent); the game then shows those compare
+-- tooltips flush against one side of GameTooltip, and anchoring straight to
+-- GameTooltip would drop us on top of them. Both shopping tooltips always sit on
+-- the same side and align their top with GameTooltip's, so we hug whichever shown
+-- frame (GameTooltip or a shopping tooltip) reaches furthest in our direction.
+-- If the shopping tooltips are on the far side they never win the comparison, so
+-- GameTooltip stays the anchor and nothing changes.
+--
+-- Split out from the build so it can also run on the no-rebuild frames: those
+-- compare tooltips can pop in, resize, or vanish a frame or more after our build
+-- (notably when SHIFT is pressed while already hovering the item), and anchoring
+-- relative to their live frame edges keeps us following them.
+local function AnchorTooltipFrame()
+  if not tooltipFrame then return end
+
+  local rightAnchor, leftAnchor = GameTooltip, GameTooltip
+  for i = 1, 2 do
+    local st = (i == 1) and ShoppingTooltip1 or ShoppingTooltip2
+    if st and st:IsShown() then
+      local stRight = st:GetRight()
+      local curRight = rightAnchor:GetRight()
+      if stRight and (not curRight or stRight > curRight) then rightAnchor = st end
+      local stLeft = st:GetLeft()
+      local curLeft = leftAnchor:GetLeft()
+      if stLeft and (not curLeft or stLeft < curLeft) then leftAnchor = st end
+    end
+  end
+
+  tooltipFrame:ClearAllPoints()
+  if lastGameTooltipAnchor == "BOTTOMLEFT" then
+    tooltipFrame:SetPoint("TOPLEFT", rightAnchor, "TOPRIGHT", 0, -10)
+  else
+    tooltipFrame:SetPoint("TOPRIGHT", leftAnchor, "TOPLEFT", 0, -10)
+  end
 end
 
 -- Build one recipe line for a character-craftable recipe. Returns the pooled
@@ -458,15 +504,21 @@ local function ShowSecondTooltip()
     return
   end
 
-  -- Skip rebuilding if item and modifier state haven't changed.
-  if link == lastTooltipLink and lastTooltipModifier then return end
+  -- Skip rebuilding if item and modifier state haven't changed - but still
+  -- re-anchor, because the item-comparison shopping tooltips can pop in, resize,
+  -- or vanish a frame or more after our build (notably when SHIFT is pressed
+  -- while already hovering). Re-anchoring is cheap: a few edge reads, one SetPoint.
+  if link == lastTooltipLink and lastTooltipModifier then
+    AnchorTooltipFrame()
+    return
+  end
   lastTooltipLink = link
   lastTooltipModifier = true
 
   -- Read GameTooltip's anchor point before any addon code can taint it.
   -- GetPoint() returns a tainted string if called after we've touched GameTooltip,
   -- causing "attempt to compare a secret string value" errors.
-  local gameTooltipAnchor = GameTooltip:GetPoint(1)
+  lastGameTooltipAnchor = GameTooltip:GetPoint(1)
 
   local reagentId = tonumber(string_match(link, "^.-:(%d+):"))
 
@@ -861,13 +913,7 @@ local function ShowSecondTooltip()
 
   -- Phase 4: Size and anchor the frame.
   tooltipFrame:SetSize(totalWidth, totalHeight)
-  tooltipFrame:ClearAllPoints()
-
-  if gameTooltipAnchor == "BOTTOMLEFT" then
-    tooltipFrame:SetPoint("TOPLEFT", GameTooltip, "TOPRIGHT", 0, -10)
-  else
-    tooltipFrame:SetPoint("TOPRIGHT", GameTooltip, "TOPLEFT", 0, -10)
-  end
+  AnchorTooltipFrame()
 
   tooltipFrame:SetFrameLevel(GameTooltip:GetFrameLevel() + 10)
 
