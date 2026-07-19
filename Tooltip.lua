@@ -11,6 +11,7 @@ local GameTooltipText                               = _G.GameTooltipText
 local ShoppingTooltip1                              = _G.ShoppingTooltip1
 local ShoppingTooltip2                              = _G.ShoppingTooltip2
 local GetItemInfo                                   = _G.GetItemInfo
+local GetTime                                       = _G.GetTime
 local IsModifiedClick                               = _G.IsModifiedClick
 local UIParent                                      = _G.UIParent
 
@@ -338,6 +339,28 @@ local lastTooltipModifier = false
 -- by AnchorTooltipFrame on the no-rebuild frames so we don't re-read it.
 local lastGameTooltipAnchor = nil
 
+-- Frame that polls modifier/tooltip state each frame (created here so
+-- ShowSecondTooltip can stop it when idle; the GameTooltip hooks that start it
+-- live at the bottom of the file).
+local tooltipModifierListener = CreateFrame("Frame")
+
+-- Deferred-hide grace for transient GameTooltip churn. Hosts that re-render
+-- under the cursor - most notably the auction house results list, which streams
+-- updates and rebuilds its rows - hide and re-show GameTooltip within a frame
+-- or two (each row's OnLeave calls GameTooltip:Hide()). Hiding our tooltip the
+-- instant GameTooltip goes away would flicker it on every such refresh.
+--
+-- Discriminator: on such churn the mouse is still over the frame that owned
+-- GameTooltip (lastTooltipOwner, captured at build time); on a genuine
+-- mouse-leave it isn't - the mouse leaving is exactly why the tooltip closed.
+-- So we only arm the grace while the owner is still mouse-over and hide
+-- immediately otherwise, keeping the normal leave/shift-release as snappy as
+-- before. The grace expiring means GameTooltip genuinely stayed gone despite
+-- the hover (e.g. the row's item changed to a non-reagent), so we hide then.
+local HIDE_GRACE_SECONDS = 0.1
+local hideGraceDeadline = nil
+local lastTooltipOwner = nil
+
 local function HideSecondTooltip()
   if tooltipFrame and tooltipFrame:IsShown() then
     ReleaseAllFontStrings()
@@ -345,6 +368,8 @@ local function HideSecondTooltip()
   end
   lastTooltipLink = nil
   lastTooltipModifier = false
+  hideGraceDeadline = nil
+  lastTooltipOwner = nil
   ResetLinePool()
 end
 
@@ -488,21 +513,50 @@ end
 
 local function ShowSecondTooltip()
 
-  -- Be fast in the standard case.
+  -- We only have something to show when SHIFT is held over a shown item tooltip.
   local modifierHeld = IsModifiedClick("COMPAREITEMS")
-  if not modifierHeld or not GameTooltip:IsShown() then
+  local gameTooltipShown = GameTooltip:IsShown()
+  local link
+  if modifierHeld and gameTooltipShown then
+    _, link = GameTooltip:GetItem()
+  end
+
+  if not link then
+    -- Nothing to show right now. Transient churn (GameTooltip hidden while the
+    -- mouse is still over its owner, see HIDE_GRACE_SECONDS) gets a short grace
+    -- before we tear down; anything else (mouse left the owner, SHIFT released
+    -- with GameTooltip still up) hides immediately. Once our tooltip is hidden
+    -- and GameTooltip is gone too, stop polling; the OnShow hook restarts it.
     if tooltipFrame and tooltipFrame:IsShown() then
-      HideSecondTooltip()
+      local transientChurn = not gameTooltipShown
+          and lastTooltipOwner
+          and lastTooltipOwner ~= UIParent
+          and lastTooltipOwner:IsMouseOver()
+      if transientChurn then
+        local now = GetTime()
+        if not hideGraceDeadline then
+          hideGraceDeadline = now + HIDE_GRACE_SECONDS
+        elseif now >= hideGraceDeadline then
+          HideSecondTooltip()
+          tooltipModifierListener:SetScript("OnUpdate", nil)
+        end
+      else
+        HideSecondTooltip()
+        if not gameTooltipShown then
+          tooltipModifierListener:SetScript("OnUpdate", nil)
+        end
+      end
+    else
+      hideGraceDeadline = nil
+      if not gameTooltipShown then
+        tooltipModifierListener:SetScript("OnUpdate", nil)
+      end
     end
     return
   end
 
-
-  local _, link = GameTooltip:GetItem()
-  if not link then
-    HideSecondTooltip()
-    return
-  end
+  -- Valid reagent tooltip: cancel any pending hide.
+  hideGraceDeadline = nil
 
   -- Skip rebuilding if item and modifier state haven't changed - but still
   -- re-anchor, because the item-comparison shopping tooltips can pop in, resize,
@@ -519,6 +573,10 @@ local function ShowSecondTooltip()
   -- GetPoint() returns a tainted string if called after we've touched GameTooltip,
   -- causing "attempt to compare a secret string value" errors.
   lastGameTooltipAnchor = GameTooltip:GetPoint(1)
+
+  -- Remember who owns GameTooltip for this build; the deferred-hide logic uses
+  -- it to tell transient churn (owner still mouse-over) from a genuine leave.
+  lastTooltipOwner = GameTooltip:GetOwner()
 
   local reagentId = tonumber(string_match(link, "^.-:(%d+):"))
 
@@ -934,17 +992,20 @@ end
 
 
 
--- Poll for modifier state changes using OnUpdate (only while GameTooltip is shown).
+-- Poll for modifier state changes using OnUpdate.
 -- MODIFIER_STATE_CHANGED is not fired when an edit box has keyboard focus (e.g. chat input),
 -- but IsModifiedClick() checks raw input state and works regardless -- same as Blizzard's
 -- item comparison tooltip (TooltipUtil.ShouldDoItemComparison uses IsModifiedClick("COMPAREITEMS")).
-local tooltipModifierListener = CreateFrame("Frame")
+--
+-- OnHide deliberately does NOT hide our tooltip or stop polling: GameTooltip is
+-- hidden and re-shown transiently by hosts that re-render under the cursor (the
+-- auction house results list especially). ShowSecondTooltip owns the hide
+-- decision via its grace window and stops the poll itself once genuinely idle.
 GameTooltip:HookScript("OnShow", function()
   tooltipModifierListener:SetScript("OnUpdate", ShowSecondTooltip)
 end)
 GameTooltip:HookScript("OnHide", function()
-  tooltipModifierListener:SetScript("OnUpdate", nil)
-  HideSecondTooltip()
+  tooltipModifierListener:SetScript("OnUpdate", ShowSecondTooltip)
 end)
 
 
