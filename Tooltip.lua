@@ -10,7 +10,7 @@ local GameTooltipText                               = _G.GameTooltipText
 -- equippable item. Globals from Blizzard_GameTooltip, present before addons load.
 local ShoppingTooltip1                              = _G.ShoppingTooltip1
 local ShoppingTooltip2                              = _G.ShoppingTooltip2
-local GetItemInfo                                   = _G.GetItemInfo
+local GetItemInfo                                   = _G.C_Item.GetItemInfo
 local GetTime                                       = _G.GetTime
 local IsModifiedClick                               = _G.IsModifiedClick
 local UIParent                                      = _G.UIParent
